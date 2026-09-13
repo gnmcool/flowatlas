@@ -1,0 +1,33 @@
+# ── Secrets — NEVER commit ──
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# ── Dependencies ──
+node_modules/
+package-lock.json
+
+# ── Runtime state (regenerates on first run) ──
+data/visits.json
+data/routing_mode.json
+
+# ── Logs ──
+*.log
+npm-debug.log*
+logs/
+
+# ── OS junk ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editors ──
+.vscode/
+.idea/
+*.swp
+*~
+
+# ── Stray files ──
+console.error*

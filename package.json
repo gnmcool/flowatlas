@@ -1,0 +1,28 @@
+{
+  "name": "flowatlas",
+  "version": "1.1.0",
+  "description": "FlowAtlas — real-time global capital intelligence terminal. Tracks world liquidity, FII/DII flows, global markets, sectors, commodities and FX.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "finance",
+    "stock-market",
+    "nifty",
+    "fii-dii",
+    "market-dashboard",
+    "trading-terminal",
+    "global-markets",
+    "liquidity-index"
+  ],
+  "author": "CA Gaurav N. Makwana",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  }
+}

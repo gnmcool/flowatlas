@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: flowatlas
+    runtime: node
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: FRED_API_KEY
+        sync: false
+      - key: NODE_VERSION
+        value: 20.11.0

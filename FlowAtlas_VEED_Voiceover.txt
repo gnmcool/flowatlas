@@ -2,7 +2,7 @@ Hi guys, myself CA Gaurav Makwana. For the last one week I've been building some
 
 This is FlowAtlas — a real-time global capital intelligence terminal. It tracks where money is moving across world markets, live, every fifteen seconds.
 
-It opens with the World Liquidity Index, built from Fed balance sheet data, global money supply, and credit spreads. Below that, a live 3D globe showing every major market — green for up, red for down.
+It opens with a live 3D globe showing every major market in the world — green for up, red for down. Below that, a Global Fear and Greed Index, built from five live inputs — volatility, yields, the dollar, market breadth, and credit spreads.
 
 Then comes the Money Flow Engine. This maps actual F-I-I and D-I-I data from N-S-E, and shows you where that money goes after it leaves India.
 

@@ -185,6 +185,13 @@ async function pollOneFuture(s) {
       if (!price) continue;
       const changePct = prev ? (price / prev - 1) * 100 : 0;
       const spark = (res.indicators?.quote?.[0]?.close || []).filter(x => x != null).slice(-60);
+      /* NSE real-time wins on price for Indian indices — it's 5s fresh vs Yahoo's
+         delayed feed. Take only the sparkline from the chart API in that case. */
+      const prevQ = STATE.quotes[s];
+      if (prevQ && prevQ.src === 'NSE_RT' && Date.now() - prevQ.ts < 30_000) {
+        prevQ.spark = spark;
+        return true;
+      }
       STATE.quotes[s] = { price: +price.toFixed(4), changePct: +changePct.toFixed(3),
         spark, ts: Date.now(), src: 'YAHOO_CHART' };
       return true;
@@ -197,6 +204,12 @@ async function pollOneFuture(s) {
 const CHART_API_SYMS = [
   ...COMS.filter(c => c.s.endsWith('=F')).map(c => c.s),
   'ES=F',           // S&P 500 E-mini futures — 23h/day live proxy for F&G when US cash closed
+  /* Yahoo's SPARK endpoint refuses these from datacenter IPs (observed on Vercel:
+     13/17 fast symbols, ^BSESN always null). The CHART endpoint serves them fine
+     (17/17), so route them here instead. Also gives Indian indices real sparklines,
+     which pollNSEQuotes then preserves while refreshing the live price. */
+  '^BSESN',         // Sensex — BSE, no NSE fallback exists
+  '^NSEI', '^NSEBANK', '^INDIAVIX',
 ];
 
 async function pollComs() {
@@ -644,6 +657,15 @@ async function pollYahoo(symbolSet) {
         if (!cl.length) continue;
         const price = last(cl);
         const base = prev ?? cl[0];
+        /* NSE real-time is fresher and undelayed for Indian symbols. Keep Yahoo as the
+           fallback (it's the only source if NSE is unreachable) but don't let a delayed
+           quote overwrite a live one — take just the sparkline in that case. */
+        const prevQ = STATE.quotes[sym];
+        if (prevQ && prevQ.src === 'NSE_RT' && Date.now() - prevQ.ts < 60_000) {
+          prevQ.spark = cl.slice(-60);
+          okCount++;
+          continue;
+        }
         STATE.quotes[sym] = {
           price, changePct: base ? (price / base - 1) * 100 : 0,
           spark: cl.slice(-60), ts: Date.now(), src: 'YAHOO',
@@ -674,12 +696,8 @@ async function pollCG() {
 /* ---------------- poller: NSE FII/DII (T+1, India-IP friendly) ---------------- */
 async function pollNSE() {
   try {
-    // cookie warm-up: NSE requires a session cookie from the homepage
-    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 12000);
-    const home = await fetch('https://www.nseindia.com/', { headers: { ...UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: ctl.signal });
-    clearTimeout(t);
-    const cookies = (home.headers.getSetCookie ? home.headers.getSetCookie() : [])
-      .map(c => c.split(';')[0]).join('; ');
+    // NSE requires a session cookie from the homepage — cached 10 min by nseCookies()
+    const cookies = await nseCookies();
     const j = await jget('https://www.nseindia.com/api/fiidiiTradeReact',
       { Cookie: cookies, Referer: 'https://www.nseindia.com/reports/fii-dii', Accept: 'application/json' });
     STATE.fii = { data: j, error: null, ts: Date.now() };
@@ -695,7 +713,8 @@ async function pollNSE() {
     } catch (e) { console.error('hist upsert:', e.message); }
     setStatus('nse', true, 'FII/DII updated');
   } catch (e) {
-    STATE.fii.error = 'NSE unreachable from this network (Akamai geo-block). Runs from Indian residential IPs.';
+    NSE_COOKIES = { v: '', ts: 0 };
+    STATE.fii.error = 'NSE unreachable right now — StockEdge fallback covers FII/DII history.';
     setStatus('nse', false, e.message);
   }
 }
@@ -759,40 +778,31 @@ async function backfillSE() {
   console.log(`[backfill] complete: +${SE_BF.added} sessions, ${FIIHIST.length} total`);
 }
 
-/* ---------------- poller: US Treasury yields (official, free, no key) ---------------- */
-/* https://fiscaldata.treasury.gov/api/public/endpoint/ — daily CMT yields */
-async function pollTreasury() {
-  try {
-    const url = 'https://api.fiscaldata.treasury.gov/services/api/v1/accounting/od/avg_interest_rates?fields=record_date,avg_interest_rate_amt,security_desc&filter=security_desc:in:(Treasury Bills,Treasury Notes,Treasury Bonds)&sort=-record_date&page[size]=10';
-    const j = await jget(url);
-    // Also fetch daily CMT yield curve
-    const cmt = await jget('https://api.fiscaldata.treasury.gov/services/api/v1/accounting/od/avg_interest_rates?fields=record_date,avg_interest_rate_amt,security_desc&filter=record_date:gte:' + new Date(Date.now()-7*864e5).toISOString().slice(0,10) + '&sort=-record_date&page[size]=30');
-    if (cmt && cmt.data && cmt.data.length) {
-      // Find latest 10Y (Treasury Notes ~10yr)
-      const notes = cmt.data.filter(r => /note/i.test(r.security_desc));
-      if (notes.length) {
-        const rate = parseFloat(notes[0].avg_interest_rate_amt);
-        if (!isNaN(rate)) {
-          // Store as a quote-compatible object so derive() can use it
-          STATE.treasury = { us10y: rate, date: notes[0].record_date, ts: Date.now() };
-          setStatus('treasury', true, `US10Y ${rate}% as of ${notes[0].record_date}`);
-        }
-      }
-    }
-  } catch (e) { setStatus('treasury', false, e.message); }
+/* ---------------- US Treasury 10Y (official daily, from FRED) ------------------------
+ * Previously hit fiscaldata.treasury.gov/…/avg_interest_rates, which now returns 404
+ * and — more importantly — reports the *average coupon on outstanding debt*, not the
+ * market yield. Those are different numbers. FRED's DGS10 is the actual daily
+ * constant-maturity market yield and is already fetched by pollFRED, so we read it
+ * from there instead of making a separate (broken) network call.
+ * Yahoo's ^TNX remains the fallback when no FRED key is configured.
+ * -----------------------------------------------------------------------------------*/
+function pollTreasury() {
+  const dgs10 = STATE.fred.data.DGS10;
+  if (!dgs10 || !dgs10.length) {
+    setStatus('treasury', false, FRED_KEY ? 'DGS10 not loaded yet' : 'needs FRED_API_KEY — using Yahoo ^TNX');
+    return;
+  }
+  const { d, v } = dgs10[0];
+  STATE.treasury = { us10y: v, date: d, ts: Date.now() };
+  setStatus('treasury', true, `US10Y ${v}% as of ${d} (FRED DGS10)`);
 }
 
 /* ---------------- poller: NSE real-time quotes (no delay for Indian markets) ---------------- */
 async function pollNSEQuotes() {
   try {
-    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 12000);
-    const home = await fetch('https://www.nseindia.com/', {
-      headers: { ...UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: ctl.signal });
-    clearTimeout(t);
-    const cookies = (home.headers.getSetCookie ? home.headers.getSetCookie() : [])
-      .map(c => c.split(';')[0]).join('; ');
-    // Fetch Nifty 50 real-time quote
-    const indices = ['NIFTY 50', 'NIFTY BANK', 'INDIA VIX', 'NIFTY IT', 'NIFTY AUTO', 'NIFTY PHARMA'];
+    /* Cookie is cached for 10 min by nseCookies(). Re-handshaking the homepage on
+       every 5s tick was ~720 requests/hour and a fast route to an Akamai block. */
+    const cookies = await nseCookies();
     const j = await jget('https://www.nseindia.com/api/allIndices',
       { Cookie: cookies, Referer: 'https://www.nseindia.com/', Accept: 'application/json' });
     if (j && j.data && Array.isArray(j.data)) {
@@ -817,7 +827,54 @@ async function pollNSEQuotes() {
       }
       if (updated) setStatus('nse-quotes', true, `${updated} indices real-time`);
     }
-  } catch (e) { setStatus('nse-quotes', false, e.message); }
+  } catch (e) { NSE_COOKIES = { v: '', ts: 0 }; setStatus('nse-quotes', false, e.message); }
+}
+
+/* ---------------- poller: NSE Nifty-50 constituents ---------------------------------
+ * Yahoo's spark endpoint returns null for every ".NS" symbol when called from a
+ * datacenter IP, which left the entire Nifty 50 heatmap blank on Vercel. NSE's own
+ * equity-stockIndices endpoint is not blocked and is real-time rather than delayed,
+ * so we source the constituents straight from it and write them into STATE.quotes
+ * under the same "<SYMBOL>.NS" keys the rest of the app already expects.
+ * -----------------------------------------------------------------------------------*/
+let NSE_COOKIES = { v: '', ts: 0 };
+async function nseCookies() {
+  if (NSE_COOKIES.v && Date.now() - NSE_COOKIES.ts < 10 * 60_000) return NSE_COOKIES.v;
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 12000);
+  try {
+    const home = await fetch('https://www.nseindia.com/', {
+      headers: { ...UA, 'Accept-Language': 'en-US,en;q=0.9' }, signal: ctl.signal });
+    const v = (home.headers.getSetCookie ? home.headers.getSetCookie() : [])
+      .map(c => c.split(';')[0]).join('; ');
+    NSE_COOKIES = { v, ts: Date.now() };
+    return v;
+  } finally { clearTimeout(t); }
+}
+
+async function pollNSEStocks() {
+  try {
+    const cookies = await nseCookies();
+    const j = await jget('https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050',
+      { Cookie: cookies, Referer: 'https://www.nseindia.com/market-data/live-equity-market',
+        Accept: 'application/json' });
+    if (!j || !Array.isArray(j.data)) { setStatus('nse-stocks', false, 'no data array'); return; }
+    let updated = 0;
+    for (const row of j.data) {
+      const base = (row.symbol || '').trim();
+      if (!base || base === 'NIFTY 50') continue;          // first row is the index itself
+      const price = parseFloat(row.lastPrice);
+      const prev  = parseFloat(row.previousClose ?? row.pClose);
+      if (!isFinite(price) || !isFinite(prev) || !prev) continue;
+      const sym = base + '.NS';
+      const existing = STATE.quotes[sym];
+      STATE.quotes[sym] = {
+        price, changePct: ((price - prev) / prev) * 100,
+        spark: existing?.spark || [], ts: Date.now(), src: 'NSE_RT',
+      };
+      updated++;
+    }
+    setStatus('nse-stocks', updated > 0, `${updated}/50 constituents real-time`);
+  } catch (e) { NSE_COOKIES = { v: '', ts: 0 }; setStatus('nse-stocks', false, e.message); }
 }
 
 /* ---------------- DXY derived from FX basket (fallback if Yahoo stale) ---------------- */
@@ -850,7 +907,7 @@ const FRED_SERIES = {
   DGS2: 'US 2Y', DGS10: 'US 10Y', DGS30: 'US 30Y',
 };
 async function pollFRED() {
-  if (!FRED_KEY) { setStatus('fred', false, 'no FRED_API_KEY — WLI in degraded mode'); return; }
+  if (!FRED_KEY) { setStatus('fred', false, 'no FRED_API_KEY — HY OAS credit factor and 2s10s curve unavailable'); return; }
   try {
     for (const id of Object.keys(FRED_SERIES)) {
       const j = await jget(`https://api.stlouisfed.org/fred/series/observations?series_id=${id}&api_key=${FRED_KEY}&file_type=json&sort_order=desc&limit=60`);
@@ -919,19 +976,6 @@ function derive() {
   const fgMode = (!usCashOpen && esFut) ? 'FUTURES' : 'LIVE';
   d.fearGreed = { score: Math.round((f.vix + f.yld + f.dxy + f.breadth + f.credit) / 5), factors: f, mode: fgMode,
     inputs: { vix: vix?.price, esFut: esFut?.changePct, us10y: tnx ? tnx.price : null, dxy: dxy?.price, hyOAS: hy?.[0]?.v ?? null, usCashOpen } };
-
-  /* World Liquidity Index: only meaningful with FRED */
-  if (STATE.fred.enabled && STATE.fred.data.WALCL?.length > 5 && STATE.fred.data.M2SL?.length > 13) {
-    const w = STATE.fred.data.WALCL, m = STATE.fred.data.M2SL;
-    const fedWoW = (w[0].v / w[4].v - 1) * 100;                 // ~4wk change
-    const m2YoY = (m[0].v / m[12].v - 1) * 100;
-    const hyv = hy?.[0]?.v ?? 4;
-    const score = Math.round(clamp(50 + fedWoW * 8 + (m2YoY - 2) * 6 + (4 - hyv) * 8, 0, 100));
-    d.wli = { score, fedWoW, m2YoY, hyOAS: hyv, asOf: w[0].d, mode: 'FRED',
-      series: w.slice(0, 52).map(o => o.v).reverse() };
-  } else {
-    d.wli = { score: null, mode: 'DEGRADED', note: 'Add FRED_API_KEY (free) for Fed B/S, M2 and credit-spread inputs.' };
-  }
 
   /* Country flow proxies: index move x cap weight (NOT real flows) */
   d.countries = COUNTRY_MAP.map(c => {
@@ -1216,8 +1260,9 @@ async function slowCycle() { await pollYahoo(SLOW_YH); derive(); broadcast(); }
 async function cryptoCycle() { await pollCG(); derive(); broadcast(); }
 (async () => {
   console.log(`FlowAtlas backend starting on :${PORT}  (FRED ${FRED_KEY ? 'enabled' : 'DISABLED — set FRED_API_KEY'}) (Finnhub ${FINNHUB_KEY ? 'enabled' : 'DISABLED — set FINNHUB_API_KEY'})`);
-  pollFRED(); pollNSE(); pollSE().then(() => { backfillSE().then(() => computeCorrelationWeights()); });
-  pollTreasury(); pollNSEQuotes(); pollNews();
+  pollFRED().then(pollTreasury);   // Treasury reads DGS10 out of FRED — must follow it
+  pollNSE(); pollSE().then(() => { backfillSE().then(() => computeCorrelationWeights()); });
+  pollNSEQuotes(); pollNSEStocks(); pollNews();
   // Also kick off correlation now (uses seed data) and refresh daily
   computeCorrelationWeights();
   setInterval(computeCorrelationWeights, 24 * 60 * 60_000);
@@ -1230,11 +1275,11 @@ async function cryptoCycle() { await pollCG(); derive(); broadcast(); }
   setInterval(slowCycle, 30_000);
   setInterval(pollComs, 30_000);   // commodity futures every 30s
   setInterval(cryptoCycle, 35_000);
-  setInterval(pollNSEQuotes, 5_000);   // NSE real-time every 5s
+  setInterval(pollNSEQuotes, 5_000);        // NSE indices real-time every 5s
+  setInterval(pollNSEStocks, 10_000);       // Nifty-50 constituents every 10s
   setInterval(pollNSE, 15 * 60_000);
   setInterval(pollSE, 30 * 60_000);
-  setInterval(pollFRED, 60 * 60_000);
+  setInterval(() => pollFRED().then(pollTreasury), 60 * 60_000);
   setInterval(pollNews, NEWS_TTL);
-  setInterval(pollTreasury, 4 * 60 * 60_000); // Treasury yields every 4h
   if (FINNHUB_KEY) setInterval(pollFinnhub, 2 * 60_000); // Finnhub fallback every 2 min
 })();

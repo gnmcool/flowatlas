@@ -41,9 +41,9 @@
 >
 > Introducing FlowAtlas v1.1 — Real-time Global Capital Intelligence
 >
-> ✅ World Liquidity Index
 > ✅ Live 3D Global Markets Globe
 > ✅ Global Fear & Greed Index
+> ✅ 46 World Indices &amp; Regional Heatmaps
 > ✅ FII/DII Money Flow Engine
 > ✅ Nifty 50 Heatmap & Sector Rotation
 > ✅ Commodities · FX Rates · Live News
@@ -60,18 +60,13 @@
 ## 🎬 REEL 2 — GLOBAL PULSE TAB (30–45 sec)
 
 **[Hook]**
-> "Before you trade anything — check global liquidity first."
+> "Before you trade anything — check what the rest of the world is doing first."
 
-**[Show WLI score]**
-> "The World Liquidity Index combines Fed balance sheet data, global M2 money supply,
-> and high-yield credit spreads into a single score.
-> Right now it's at 76 — meaning global liquidity is EXPANDING.
-> More liquidity = more risk appetite = more flows into emerging markets like India."
-
-**[Scroll to globe]**
+**[Show globe]**
 > "This 3D globe shows every major market in the world, live.
 > Green dot = up today. Red dot = down today.
-> Drag to rotate. Tap any dot to see the index chart."
+> Drag to rotate. Tap any dot to see the index chart.
+> One glance tells you whether risk is on or off globally."
 
 **[Show Fear & Greed gauge]**
 > "And the Global Fear & Greed Index — built from five live inputs:
@@ -81,7 +76,7 @@
 
 **Caption:**
 > 🌍 Page 1: Global Pulse
-> World Liquidity Index + Live Globe + Fear & Greed — all in one screen
+> Live 3D Globe + Global Fear &amp; Greed Index — all in one screen
 > This is the macro picture every trader should check before the bell
 > #MacroTrading #GlobalMarkets #FlowAtlas #FearAndGreed #LiquidityIndex
 
@@ -212,9 +207,9 @@
 > FlowAtlas is a real-time global capital intelligence terminal I built as a CA who wanted one dashboard that showed the full picture.
 >
 > Here's what's inside:
-> 🌍 World Liquidity Index (Fed + M2 + Credit spreads)
 > 🌐 Live 3D globe of global markets
 > 😨 Global Fear & Greed Index (5 live factors)
+> 🌍 46 world indices + regional heatmaps
 > 💸 FII/DII money flow engine with Sankey routing
 > 🇮🇳 Live NSE FII & DII cash market flows
 > 📊 Nifty 50 heatmap + sector rotation

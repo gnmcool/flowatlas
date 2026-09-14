@@ -77,17 +77,6 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
 .flup{animation:flup 1.2s ease-out}.fldn{animation:fldn 1.2s ease-out}
 @media(prefers-reduced-motion:reduce){.flup,.fldn,.logo .pulse{animation:none}}
 
-/* ---------- WLI ---------- */
-.liqstrip{display:flex;align-items:center;gap:22px;margin-bottom:12px;padding:16px 20px;flex-wrap:wrap;
-  border:1px solid rgba(77,168,255,.28);background:linear-gradient(90deg,rgba(77,168,255,.09),rgba(4,7,12,0) 60%)}
-.liqstrip .score{font-family:var(--disp);font-weight:700;font-size:46px;line-height:1;color:var(--liq);
-  text-shadow:0 0 24px rgba(77,168,255,.45)}
-.liqstrip .lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.2em;color:var(--mut)}
-.liqstrip .stmt{font-family:var(--disp);font-size:15px;font-weight:500;max-width:560px}
-.liqstrip .stmt em{font-style:normal}
-.liqcomp{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:10px;color:var(--mut);margin-top:4px}
-.liqcomp span b{color:var(--txt);font-weight:500}
-
 /* ---------- geo map ---------- */
 #mapwrap{position:relative;height:430px}
 #geomap{width:100%;height:100%;display:block;cursor:grab;touch-action:none}
@@ -270,7 +259,6 @@ body.light .panel{background:linear-gradient(180deg,#fff,#f7fafc)}
 body.light .ticker{background:rgba(240,244,248,.97)}
 body.light .news-ticker-wrap::before{background:linear-gradient(to bottom,#f0f4f8,transparent)}
 body.light .news-ticker-wrap::after{background:linear-gradient(to top,#f0f4f8,transparent)}
-body.light .liqstrip{border-color:rgba(43,108,176,.3);background:linear-gradient(90deg,rgba(43,108,176,.07),transparent 60%)}
 body.light .news-title{color:#2d3748}
 body.light #fiitip{background:rgba(255,255,255,.98);border-color:rgba(0,0,0,.15)}
 body.light .insight{background:linear-gradient(90deg,rgba(43,108,176,.04),transparent 50%)}
@@ -315,12 +303,6 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
   /* --- panels --- */
   .panel{padding:10px 10px}
   .eyebrow{font-size:8px;letter-spacing:.12em;margin-bottom:7px;flex-wrap:wrap}
-
-  /* --- WLI strip --- */
-  .liqstrip{padding:10px 12px;gap:10px;flex-direction:column;align-items:flex-start}
-  .liqstrip .score{font-size:38px}
-  .liqstrip .stmt{font-size:13px;max-width:100%}
-  .liqcomp{gap:8px;font-size:9px}
 
   /* --- geo map --- */
   #mapwrap{height:260px}
@@ -460,18 +442,6 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
 
 <!-- ================= GLOBAL PULSE ================= -->
 <section class="screen active" id="s-pulse">
-  <div class="liqstrip">
-    <div>
-      <div class="lbl">WORLD LIQUIDITY INDEX</div>
-      <div class="score" id="wli">—</div>
-    </div>
-    <div style="flex:1;min-width:260px">
-      <div class="stmt" id="wlistmt">Connecting…</div>
-      <div class="liqcomp" id="wlicomp"></div>
-    </div>
-    <canvas id="wlispark" width="220" height="56"></canvas>
-  </div>
-
   <div class="grid g-pulse">
     <div class="panel">
       <div class="eyebrow"><span>GLOBAL MARKETS</span></div>
@@ -1262,28 +1232,6 @@ function rGauge(){
   const modeEl=$('#fg-mode');if(modeEl){modeEl.textContent=isFut?'⬡ FUTURES PROXY':'⬡ LIVE';modeEl.style.color=isFut?'var(--gold)':'var(--in)';}
   const r=$('#regime'),on=SNAP.derived.regime==='RISK-ON';
   r.textContent=SNAP.derived.regime;r.className='regime '+(on?'on':'off');
-}
-function rWLI(){
-  const w=SNAP.derived.wli;
-  if(w.mode==='FRED'){
-    $('#wli').textContent=w.score;
-    const exp=w.score>=55,word=exp?'Expanding':w.score>=45?'Stable':'Contracting';
-    $('#wlistmt').innerHTML=`Global liquidity: <em style="color:${exp?'var(--in)':'var(--out)'}">${word}</em> — Fed B/S ${sgn(w.fedWoW)}% (4wk), M2 ${sgn(w.m2YoY)}% y/y, HY OAS ${fmt(w.hyOAS)}%. As of ${w.asOf}.`;
-    $('#wlicomp').innerHTML=`<span>FED B/S 4WK <b>${sgn(w.fedWoW)}%</b></span><span>M2 Y/Y <b>${sgn(w.m2YoY)}%</b></span><span>HY OAS <b>${fmt(w.hyOAS)}%</b></span>`;
-    if(w.series&&w.series.length>2){
-      const c=$('#wlispark'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);
-      const h=w.series,min=Math.min(...h),max=Math.max(...h);
-      x.strokeStyle='#4DA8FF';x.lineWidth=1.6;x.beginPath();
-      h.forEach((p,i)=>{const px=i/(h.length-1)*c.width,py=c.height-3-((p-min)/((max-min)||1))*(c.height-6);i?x.lineTo(px,py):x.moveTo(px,py)});
-      x.stroke();
-      const g=x.createLinearGradient(0,0,0,c.height);g.addColorStop(0,'rgba(77,168,255,.25)');g.addColorStop(1,'rgba(77,168,255,0)');
-      x.lineTo(c.width,c.height);x.lineTo(0,c.height);x.closePath();x.fillStyle=g;x.fill();
-    }
-  }else{
-    $('#wli').textContent='—';
-    $('#wlistmt').innerHTML=`<span style="color:var(--gold)">${w.note||'Liquidity inputs unavailable.'}</span>`;
-    $('#wlicomp').innerHTML='<span>Free key: fred.stlouisfed.org → run with FRED_API_KEY=…</span>';
-  }
 }
 /* Market cap weights (USD trillions) for treemap sizing */
 const CC_CAP={US:48,CN:10,JP:6,DE:6,IN:4.5,HK:5,FR:3,UK:3.2,TW:2,KR:2,SG:1,TH:0.8,ID:0.8,BR:1.2,AU:1.6};
@@ -2095,7 +2043,7 @@ function updateTitle(){
 
 function renderAll(){
   if(!SNAP)return;
-  maybeDrawGeo();rWLI();rGauge();rEcoGrid();rMovers();
+  maybeDrawGeo();rGauge();rEcoGrid();rMovers();
   rSankey();rRotation();rInsights();
   rWorldCards();rBonds();rComs();rCrypto();
   rIndia();rSectorBars();rComHeat();rFX();rTicker();

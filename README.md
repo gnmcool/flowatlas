@@ -18,7 +18,7 @@ FlowAtlas is a self-hosted markets dashboard that pulls live data from public so
 
 | Tab | What's in it |
 |---|---|
-| **Global Pulse** | World Liquidity Index, live 3D globe of world markets, Global Fear & Greed Index |
+| **Global Pulse** | Live 3D globe of world markets, Global Fear & Greed Index, top movers |
 | **Flow Engine** | FII/DII money-flow Sankey with correlation-based routing, asset class rotation |
 | **World Markets** | 46 global indices, regional heatmaps |
 | **Indian Markets** | Nifty / Sensex / Bank Nifty / India VIX, NSE FII-DII flows, sector bars, Nifty 50 heatmap |
@@ -39,7 +39,7 @@ cd flowatlas
 # 2. Install (single dependency)
 npm install
 
-# 3. Add your FRED key (free — needed for the liquidity index)
+# 3. Add your FRED key (free — needed for credit spreads and the yield curve)
 cp .env.example .env
 #   then open .env and paste your key
 
@@ -75,7 +75,7 @@ Read this before trusting any panel.
 | Indices, commodities, FX, US yields | Yahoo Finance spark | ~20s poll; some venues delayed up to 15 min | Real prices |
 | Crypto | CoinGecko free | ~30s poll | Real prices / mcap |
 | Fear & Greed | VIX, US10Y, DXY, breadth, HY OAS | live inputs | **DERIVED** — formula is in `derive()` |
-| World Liquidity Index | FRED: WALCL, M2SL, HY OAS | weekly / monthly series | **DERIVED** from real data; needs FRED key |
+| HY credit spread, 2s10s curve | FRED: BAMLH0A0HYM2, DGS2, DGS10 | daily | Real series; needs FRED key |
 | India FII/DII | NSE provisional | **T+1, after close** | The only measured *flow* in the free stack |
 | Sankey, rotation, sector radar | Price / sector-ETF moves | live inputs | **PROXIES, not measured fund flows** — labeled DERIVED in the UI |
 | Crypto exchange flows / whales | not included | — | Needs Glassnode / CryptoQuant (paid). Omitted rather than faked |
@@ -110,7 +110,7 @@ Note the NSE limitation above — on cloud hosts the FII/DII panel will not popu
 
 ## Roadmap
 
-1. ~~FRED key → WLI + 2s10s live~~ ✅
+1. ~~FRED key → credit spreads + 2s10s live~~ ✅
 2. ~~Correlation-based Sankey routing~~ ✅
 3. ~~Mobile responsive + light mode~~ ✅
 4. Deploy near an Indian IP → NSE FII/DII activates

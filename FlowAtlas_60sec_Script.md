@@ -14,8 +14,8 @@
 > It tracks where money is moving across world markets, live, every 15 seconds."
 
 **[0:18 – 0:35] — THE WALKTHROUGH**
-> "It opens with the World Liquidity Index — built from Fed balance sheet data, global money supply, and credit spreads.
-> Below it, a live 3D globe showing every major market — green for up, red for down.
+> "It opens with a live 3D globe showing every major market in the world — green for up, red for down.
+> Below that, a Global Fear and Greed Index built from five live inputs — volatility, yields, the dollar, market breadth and credit spreads.
 > Then the Money Flow Engine — this maps actual FII and DII data from NSE and shows where that money goes after it leaves India.
 > Plus sector rotation, commodities, live FX rates, and market news."
 
@@ -38,9 +38,9 @@
 > **FlowAtlas** — a real-time global capital intelligence terminal.
 >
 > What's inside:
-> 🌍 World Liquidity Index
 > 🌐 Live 3D global markets globe
 > 😨 Global Fear & Greed Index
+> 🌍 46 world indices + regional heatmaps
 > 💸 FII/DII money flow engine
 > 📊 Nifty 50 heatmap + sector rotation
 > 🛢️ Commodities · 💱 FX rates · 📰 Live news
@@ -64,8 +64,8 @@
 |---|---|
 | 0:00–0:08 | Your face / talking head |
 | 0:08–0:18 | App loading, logo visible |
-| 0:18–0:23 | Global Pulse tab — WLI score |
-| 0:23–0:27 | Rotate the 3D globe |
+| 0:18–0:23 | Global Pulse tab — rotate the 3D globe |
+| 0:23–0:27 | Fear &amp; Greed gauge |
 | 0:27–0:33 | Flow Engine tab — Sankey diagram |
 | 0:33–0:35 | Quick swipe: Sectors, FX, News |
 | 0:35–0:48 | Mobile view + tap dark/light toggle |

@@ -24,6 +24,12 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
+/* A poller throwing must never take the whole process down. On a serverless host a
+   crash surfaces to visitors as FUNCTION_INVOCATION_FAILED — the entire dashboard
+   goes dark because one upstream API had a bad minute. Log and keep serving. */
+process.on('unhandledRejection', e => console.error('[unhandledRejection]', e?.message || e));
+process.on('uncaughtException',  e => console.error('[uncaughtException]',  e?.message || e));
+
 const PORT = process.env.PORT || 8787;
 const FRED_KEY = process.env.FRED_API_KEY || '';
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY || '';
@@ -212,11 +218,17 @@ const CHART_API_SYMS = [
   '^NSEI', '^NSEBANK', '^INDIAVIX',
 ];
 
+/* Polled in small parallel batches rather than one-at-a-time. The old sequential
+   loop with 250ms gaps took CHART_API_SYMS × (fetch + 250ms) — over 20s once the
+   Indian indices were added, which blew past the startup budget on Vercel and left
+   the function never becoming ready. Batches of 5 keep Yahoo happy and cut it to ~3s. */
 async function pollComs() {
   let ok = 0;
-  for (let i = 0; i < CHART_API_SYMS.length; i++) {
-    if (await pollOneFuture(CHART_API_SYMS[i])) ok++;
-    if (i < CHART_API_SYMS.length - 1) await new Promise(r => setTimeout(r, 250));
+  for (let i = 0; i < CHART_API_SYMS.length; i += 5) {
+    const batch = CHART_API_SYMS.slice(i, i + 5);
+    const res = await Promise.all(batch.map(s => pollOneFuture(s).catch(() => false)));
+    ok += res.filter(Boolean).length;
+    if (i + 5 < CHART_API_SYMS.length) await new Promise(r => setTimeout(r, 200));
   }
   setStatus('coms', ok > 0, `${ok}/${CHART_API_SYMS.length} chart-api symbols`);
   if (ok) { derive(); broadcast(); }
@@ -1260,17 +1272,26 @@ async function slowCycle() { await pollYahoo(SLOW_YH); derive(); broadcast(); }
 async function cryptoCycle() { await pollCG(); derive(); broadcast(); }
 (async () => {
   console.log(`FlowAtlas backend starting on :${PORT}  (FRED ${FRED_KEY ? 'enabled' : 'DISABLED — set FRED_API_KEY'}) (Finnhub ${FINNHUB_KEY ? 'enabled' : 'DISABLED — set FINNHUB_API_KEY'})`);
-  pollFRED().then(pollTreasury);   // Treasury reads DGS10 out of FRED — must follow it
+
+  /* Bind the port FIRST. Previously this waited on the initial Yahoo + CoinGecko +
+     commodities pass — tens of seconds of network I/O before the socket was open.
+     On a host that expects a fast ready signal (Vercel) that means the function is
+     killed before it ever listens. The dashboard degrades gracefully while the
+     first poll completes, so there is no reason to block on it. */
+  server.listen(PORT, () => console.log(`✓ http://localhost:${PORT}`));
+
+  /* Everything below is fire-and-forget; each poller has its own try/catch and
+     broadcasts to connected clients as its data lands. */
+  pollFRED().then(pollTreasury).catch(e => console.error('fred/treasury:', e.message));
   pollNSE(); pollSE().then(() => { backfillSE().then(() => computeCorrelationWeights()); });
   pollNSEQuotes(); pollNSEStocks(); pollNews();
-  // Also kick off correlation now (uses seed data) and refresh daily
   computeCorrelationWeights();
   setInterval(computeCorrelationWeights, 24 * 60 * 60_000);
-  await Promise.all([pollYahoo(ALL_YH), pollCG(), pollComs()]);
-  derive();
-  // Finnhub fills any gaps left after initial Yahoo + commodity poll
-  if (FINNHUB_KEY) pollFinnhub();
-  server.listen(PORT, () => console.log(`✓ http://localhost:${PORT}`));
+
+  Promise.all([pollYahoo(ALL_YH), pollCG(), pollComs()])
+    .then(() => { derive(); broadcast(); if (FINNHUB_KEY) pollFinnhub(); })
+    .catch(e => console.error('initial poll:', e.message));
+
   setInterval(fastCycle, 6_000);
   setInterval(slowCycle, 30_000);
   setInterval(pollComs, 30_000);   // commodity futures every 30s
@@ -1279,7 +1300,7 @@ async function cryptoCycle() { await pollCG(); derive(); broadcast(); }
   setInterval(pollNSEStocks, 10_000);       // Nifty-50 constituents every 10s
   setInterval(pollNSE, 15 * 60_000);
   setInterval(pollSE, 30 * 60_000);
-  setInterval(() => pollFRED().then(pollTreasury), 60 * 60_000);
+  setInterval(() => pollFRED().then(pollTreasury).catch(() => {}), 60 * 60_000);
   setInterval(pollNews, NEWS_TTL);
   if (FINNHUB_KEY) setInterval(pollFinnhub, 2 * 60_000); // Finnhub fallback every 2 min
 })();

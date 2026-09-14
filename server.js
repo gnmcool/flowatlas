@@ -866,26 +866,38 @@ async function nseCookies() {
 async function pollNSEStocks() {
   try {
     const cookies = await nseCookies();
-    const j = await jget('https://www.nseindia.com/api/equity-stockIndices?index=NIFTY%2050',
+    /* NSE retired /api/equity-stockIndices (it now 404s) and moved the live market
+       watch to this NextApi route. Payload is { data: { data: [...] } } with 51 rows:
+       row 0 is the index itself (series === null), rows 1-50 are the constituents.
+       pChange is supplied directly, so no need to recompute from previousClose. */
+    const j = await jget('https://www.nseindia.com/api/NextApi/apiClient/marketWatchApi?functionName=getIndicesData&symbol=NIFTY%2050',
       { Cookie: cookies, Referer: 'https://www.nseindia.com/market-data/live-equity-market',
         Accept: 'application/json' });
-    if (!j || !Array.isArray(j.data)) { setStatus('nse-stocks', false, 'no data array'); return; }
+    const rows = j?.data?.data;
+    if (!Array.isArray(rows)) { setStatus('nse-stocks', false, 'unexpected payload shape'); return; }
     let updated = 0;
-    for (const row of j.data) {
+    for (const row of rows) {
+      if (!row.series) continue;                       // index row, not a constituent
       const base = (row.symbol || '').trim();
-      if (!base || base === 'NIFTY 50') continue;          // first row is the index itself
+      if (!base) continue;
       const price = parseFloat(row.lastPrice);
-      const prev  = parseFloat(row.previousClose ?? row.pClose);
-      if (!isFinite(price) || !isFinite(prev) || !prev) continue;
+      if (!isFinite(price)) continue;
+      let chg = parseFloat(row.pChange);
+      if (!isFinite(chg)) {
+        const prev = parseFloat(row.previousClose);
+        if (!isFinite(prev) || !prev) continue;
+        chg = ((price - prev) / prev) * 100;
+      }
       const sym = base + '.NS';
       const existing = STATE.quotes[sym];
       STATE.quotes[sym] = {
-        price, changePct: ((price - prev) / prev) * 100,
+        price, changePct: chg,
         spark: existing?.spark || [], ts: Date.now(), src: 'NSE_RT',
       };
       updated++;
     }
     setStatus('nse-stocks', updated > 0, `${updated}/50 constituents real-time`);
+    if (updated) { derive(); broadcast(); }
   } catch (e) { NSE_COOKIES = { v: '', ts: 0 }; setStatus('nse-stocks', false, e.message); }
 }
 

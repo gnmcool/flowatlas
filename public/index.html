@@ -712,7 +712,11 @@ function getSunPos(){
 function initGlobe(){
   if(typeof THREE==='undefined'||!WORLD)return;
   const wrap=GLOBE_MC.parentElement;
-  const W=Math.max(200,wrap.clientWidth),H=430;
+  /* Read the height from the container instead of hardcoding 430. The mobile
+     stylesheet sets #mapwrap to 260px, so a fixed 430 rendered a squashed,
+     cropped globe on every phone. */
+  const globeH=()=>Math.max(160,wrap.clientHeight||430);
+  const W=Math.max(200,wrap.clientWidth),H=globeH();
 
   /* Main texture canvas — equirectangular 2048×1024 */
   const texCv=document.createElement('canvas');texCv.width=2048;texCv.height=1024;
@@ -820,6 +824,36 @@ function initGlobe(){
     }else{if(!isDrag)GLOBE_MC.style.cursor='grab';gtip.style.display='none';}
   });
   GLOBE_MC.addEventListener('mouseleave',()=>{gtip.style.display='none';});
+
+  /* ── GPU resource disposal ──────────────────────────────────────────────────
+     Group.remove() only detaches from the scene graph — the BufferGeometry and
+     Material stay resident in VRAM. Both updateMarkers() and buildFlowArcs() run
+     on every SSE push (~6s), so without explicit disposal this leaked roughly
+     300 GPU objects per rebuild, forever. Always dispose before removing. */
+  function disposeChild(o){
+    /* Shared geometries are reused across rebuilds — disposing one would blank
+       every future marker, so skip anything registered in SHARED. */
+    if(o.geometry&&!SHARED_SET.has(o.geometry))o.geometry.dispose();
+    const m=o.material;
+    if(m){ (Array.isArray(m)?m:[m]).forEach(x=>{ if(x.map)x.map.dispose(); x.dispose(); }); }
+  }
+  function clearGroup(g){
+    for(let i=g.children.length-1;i>=0;i--){
+      const c=g.children[i];
+      c.traverse?.(disposeChild);
+      if(!c.traverse)disposeChild(c);
+      g.remove(c);
+    }
+  }
+
+  /* Particles and rings are identical per instance — build the geometry once and
+     share it across every marker/particle instead of allocating thousands. */
+  const SHARED={
+    dot:new THREE.SphereGeometry(0.020,10,10),
+    ring:new THREE.RingGeometry(0.028,0.044,24),
+    particle:new THREE.SphereGeometry(0.013,6,6),
+  };
+  const SHARED_SET=new Set(Object.values(SHARED));
 
   /* lat/lon → 3D surface point */
   function ll2v(lat,lon,r){r=r||1.026;
@@ -969,22 +1003,22 @@ function initGlobe(){
 
   /* Place blinking dot + ring markers at each tracked index location */
   function updateMarkers(){
-    while(mkGroup.children.length)mkGroup.remove(mkGroup.children[0]);
+    clearGroup(mkGroup);            // dispose, don't just detach
     mkData=[];
     (SNAP?.derived?.world||[]).filter(w=>w.t12&&w.ll).forEach((w,i)=>{
       const pos=ll2v(w.ll[1],w.ll[0]);
       const c=w.chg;
       const bull=c==null?null:c>=0;
       const col=bull===null?0x5c7186:bull?0x00E59B:0xFF4D6A;
-      /* Core dot */
+      /* Core dot — geometry shared, material per-marker (colour differs) */
       const dot=new THREE.Mesh(
-        new THREE.SphereGeometry(0.020,10,10),
+        SHARED.dot,
         new THREE.MeshBasicMaterial({color:col})
       );
       dot.position.copy(pos);mkGroup.add(dot);
       /* Blinking ring — animates in tick() */
       const rng=new THREE.Mesh(
-        new THREE.RingGeometry(0.028,0.044,24),
+        SHARED.ring,
         new THREE.MeshBasicMaterial({color:col,side:THREE.DoubleSide,transparent:true,opacity:0.6,depthWrite:false})
       );
       rng.position.copy(pos);
@@ -998,6 +1032,10 @@ function initGlobe(){
   const _eu=new THREE.Euler(),_q=new THREE.Quaternion(),_sv=new THREE.Vector3();
   function tick(){
     requestAnimationFrame(tick);
+    /* The globe lives on the Global Pulse screen. On any other tab it is
+       display:none but was still rendering at 60fps — pure battery and GPU burn.
+       offsetParent is null for a display:none subtree, so this is a cheap check. */
+    if(!GLOBE_MC.offsetParent||document.hidden)return;
     if(autoRot&&!isDrag)rotY+=0.0003;
     earth.rotation.set(rotX,rotY,0);
     mkGroup.rotation.set(rotX,rotY,0);
@@ -1030,8 +1068,9 @@ function initGlobe(){
   }tick();
 
   if(typeof ResizeObserver!=='undefined'){
-    new ResizeObserver(()=>{const nW=Math.max(200,wrap.clientWidth);
-      renderer.setSize(nW,H,false);cam.aspect=nW/H;cam.updateProjectionMatrix();
+    new ResizeObserver(()=>{
+      const nW=Math.max(200,wrap.clientWidth),nH=globeH();
+      renderer.setSize(nW,nH,false);cam.aspect=nW/nH;cam.updateProjectionMatrix();
     }).observe(wrap);
   }
 
@@ -1054,12 +1093,11 @@ function initGlobe(){
   };
 
   function arcMidPoint(v0,v1,lift){
+    /* Control point pushed outward along the midpoint normal so the arc bows over
+       the surface rather than cutting through the globe. Longer hops bow higher. */
     const mid=v0.clone().add(v1).multiplyScalar(0.5);
-    mid.normalize().multiplyScalar(1.026+lift);
-    /* push control point outward so arc never dips through globe */
     const dist=v0.distanceTo(v1);
-    mid.normalize().multiplyScalar(1.026+Math.max(lift,dist*0.55));
-    return mid;
+    return mid.normalize().multiplyScalar(1.026+Math.max(lift,dist*0.55));
   }
 
   function makeArcTube(v0,v1,col,thickness){
@@ -1074,10 +1112,14 @@ function initGlobe(){
   }
 
   function makeParticles(curve,col,count){
+    /* Geometry is shared across every particle in the app (it was previously a
+       fresh SphereGeometry each). Materials stay per-particle because the trail
+       fade in tickFlowArcs() animates opacity individually. clearGroup() disposes
+       them on rebuild, which is what was leaking before. */
     const spheres=[];
     for(let i=0;i<count;i++){
       const s=new THREE.Mesh(
-        new THREE.SphereGeometry(0.013,6,6),
+        SHARED.particle,
         new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:1.0,depthWrite:false})
       );
       flowGroup.add(s);
@@ -1088,8 +1130,7 @@ function initGlobe(){
   }
 
   function buildFlowArcs(){
-    /* clear old */
-    while(flowGroup.children.length)flowGroup.remove(flowGroup.children[0]);
+    clearGroup(flowGroup);          // dispose, don't just detach
     flowArcs=[];
     if(!SNAP?.derived?.world)return;
 

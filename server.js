@@ -688,19 +688,53 @@ async function pollYahoo(symbolSet) {
   if (okCount) setStatus('yahoo', true, `${okCount}/${syms.length} symbols`);
 }
 
-/* ---------------- poller: CoinGecko ---------------- */
+/* ---------------- poller: CoinGecko ------------------------------------------------
+ * The free tier is a shared ~30 req/min pool and was returning HTTP 429 in
+ * production. Three things were wrong:
+ *   1. a 35s interval, and each pass made TWO requests (price + global) — roughly
+ *      4,900 calls/day
+ *   2. /global barely moves (total mcap, BTC dominance) yet was fetched as often
+ *      as spot prices
+ *   3. a 429 produced no backoff at all, so it kept hammering at the same rate
+ *
+ * Now: 120s interval (see scheduler), /global only every 5th pass, and exponential
+ * backoff on 429 up to 15 minutes. Existing values stay on screen while backed off
+ * rather than blanking out.
+ * -----------------------------------------------------------------------------------*/
+let CG_BACKOFF_UNTIL = 0;
+let CG_BACKOFF_MS = 0;
+let CG_PASS = 0;
+
 async function pollCG() {
+  if (Date.now() < CG_BACKOFF_UNTIL) {
+    setStatus('coingecko', false, `rate-limited — retry in ${Math.ceil((CG_BACKOFF_UNTIL - Date.now()) / 1000)}s`);
+    return;
+  }
   try {
     const j = await jget('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,tether&vs_currencies=usd&include_24hr_change=true&include_market_cap=true');
     for (const [id, v] of Object.entries(j))
       STATE.crypto[id] = { usd: v.usd, chg24h: v.usd_24h_change || 0, mcap: v.usd_market_cap || 0, ts: Date.now() };
-    const g = await jget('https://api.coingecko.com/api/v3/global');
-    STATE.cgGlobal = {
-      mcapChg24h: g.data.market_cap_change_percentage_24h_usd,
-      btcDom: g.data.market_cap_percentage?.btc, ts: Date.now(),
-    };
+
+    /* Total market cap and BTC dominance move slowly — no need to refetch every pass */
+    if (CG_PASS % 5 === 0 || !STATE.cgGlobal) {
+      const g = await jget('https://api.coingecko.com/api/v3/global');
+      STATE.cgGlobal = {
+        mcapChg24h: g.data.market_cap_change_percentage_24h_usd,
+        btcDom: g.data.market_cap_percentage?.btc, ts: Date.now(),
+      };
+    }
+    CG_PASS++;
+    CG_BACKOFF_MS = 0;                      // recovered — reset the ladder
     setStatus('coingecko', true, 'ok');
-  } catch (e) { setStatus('coingecko', false, e.message); }
+  } catch (e) {
+    if (/429/.test(e.message)) {
+      CG_BACKOFF_MS = CG_BACKOFF_MS ? Math.min(CG_BACKOFF_MS * 2, 15 * 60_000) : 60_000;
+      CG_BACKOFF_UNTIL = Date.now() + CG_BACKOFF_MS;
+      setStatus('coingecko', false, `HTTP 429 — backing off ${Math.round(CG_BACKOFF_MS / 1000)}s`);
+    } else {
+      setStatus('coingecko', false, e.message);
+    }
+  }
 }
 
 /* ---------------- poller: NSE FII/DII (T+1, India-IP friendly) ---------------- */
@@ -1347,7 +1381,7 @@ async function cryptoCycle() { await pollCG(); derive(); broadcast(); }
   setInterval(fastCycle, 6_000);
   setInterval(slowCycle, 30_000);
   setInterval(pollComs, 30_000);   // commodity futures every 30s
-  setInterval(cryptoCycle, 35_000);
+  setInterval(cryptoCycle, 120_000);  // CoinGecko free tier — see pollCG() notes
   setInterval(pollNSEQuotes, 5_000);        // NSE indices real-time every 5s
   setInterval(pollNSEStocks, 10_000);       // Nifty-50 constituents every 10s
   setInterval(pollNSE, 15 * 60_000);

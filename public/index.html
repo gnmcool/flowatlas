@@ -638,23 +638,26 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
     font-family:var(--mono);font-size:9.5px;color:var(--mut);white-space:nowrap;
     background:rgba(6,10,16,.95)">
     <span style="width:6px;height:6px;border-radius:50%;background:var(--in);display:inline-block;flex-shrink:0;box-shadow:0 0 6px var(--in)"></span>
-    <span id="visit-count">—</span> visits
+    <span id="visit-count">—</span> visitors
   </div>
 </div>
 
 <script>
 const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
 
-/* ── Visit counter ── */
+/* ── Unique visitor counter ──
+   Server dedupes by hashed IP+UA, so this is distinct people, not page loads.
+   Refreshed every 5 min so a long-open tab doesn't show a stale number. */
 async function loadVisitCount(){
   try{
-    const r=await fetch('/api/visits');
+    const r=await fetch('/api/visits',{cache:'no-store'});
     const d=await r.json();
     const el=$('#visit-count');
     if(el&&d.count!=null) el.textContent=d.count.toLocaleString('en-IN');
   }catch{}
 }
 setTimeout(loadVisitCount,2000);
+setInterval(loadVisitCount,5*60*1000);
 
 /* ── Dark / Light mode ── */
 function toggleTheme(){

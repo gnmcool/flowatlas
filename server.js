@@ -389,14 +389,77 @@ const CORR_SYMS = [
 /* Routing mode: persisted to disk so restarts preserve the choice */
 const ROUTING_MODE_FILE = path.join(__dirname, 'data', 'routing_mode.json');
 
-/* ── Visit counter ── */
+/* ── Unique visitor counter ──────────────────────────────────────────────────────
+ * Counts distinct visitors, not page loads, and survives redeploys.
+ *
+ * The old version incremented a file on every request to "/", so one person
+ * refreshing five times counted five times — and Vercel's filesystem is ephemeral,
+ * so the whole tally reset on each deploy. Both are fixed here:
+ *
+ *   dedup      a visitor is sha256(ip + user-agent), truncated. Redis HyperLogLog
+ *              (PFADD/PFCOUNT) tracks distinct IDs in ~12 KB flat, no matter how
+ *              many visitors — and is exact at the low counts this site will see.
+ *              No raw IP or UA is ever stored, only the hash.
+ *   persist    Upstash Redis over its REST API. No npm dependency, and the data
+ *              lives outside the deployment so redeploys don't touch it.
+ *
+ * Falls back to the local JSON file when the Upstash vars are absent, so running
+ * `node server.js` on your own machine still works with no setup.
+ * -------------------------------------------------------------------------------*/
+const crypto = require('crypto');
+const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL || '';
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const REDIS_OK = !!(UPSTASH_URL && UPSTASH_TOKEN);
+const HLL_KEY = 'flowatlas:visitors';
+
 const VISITS_FILE = path.join(__dirname, 'data', 'visits.json');
 let VISIT_COUNT = 0;
-try { VISIT_COUNT = JSON.parse(fs.readFileSync(VISITS_FILE, 'utf8')).count || 0; } catch {}
-function incrementVisit() {
-  VISIT_COUNT++;
-  try { fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
-    fs.writeFileSync(VISITS_FILE, JSON.stringify({ count: VISIT_COUNT })); } catch {}
+let LOCAL_SEEN = new Set();          // local-mode dedup (process lifetime)
+try {
+  const f = JSON.parse(fs.readFileSync(VISITS_FILE, 'utf8'));
+  VISIT_COUNT = f.count || 0;
+} catch {}
+
+function visitorId(req) {
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+    || req.socket?.remoteAddress || 'unknown';
+  const ua = req.headers['user-agent'] || '';
+  return crypto.createHash('sha256').update(ip + '|' + ua).digest('hex').slice(0, 24);
+}
+
+async function redis(cmd) {
+  const r = await fetch(`${UPSTASH_URL}/${cmd.map(encodeURIComponent).join('/')}`, {
+    headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+  });
+  if (!r.ok) throw new Error('upstash HTTP ' + r.status);
+  return (await r.json()).result;
+}
+
+async function recordVisit(req) {
+  const id = visitorId(req);
+  if (REDIS_OK) {
+    try {
+      await redis(['PFADD', HLL_KEY, id]);
+      VISIT_COUNT = await redis(['PFCOUNT', HLL_KEY]);
+      setStatus('visitors', true, `${VISIT_COUNT} unique (redis)`);
+      return;
+    } catch (e) { setStatus('visitors', false, e.message); /* fall through to local */ }
+  }
+  if (!LOCAL_SEEN.has(id)) {
+    LOCAL_SEEN.add(id);
+    VISIT_COUNT++;
+    try { fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
+      fs.writeFileSync(VISITS_FILE, JSON.stringify({ count: VISIT_COUNT })); } catch {}
+  }
+}
+
+/* Refresh the cached total on boot so the number is right before anyone visits */
+async function loadVisitCount() {
+  if (!REDIS_OK) return;
+  try {
+    VISIT_COUNT = await redis(['PFCOUNT', HLL_KEY]);
+    setStatus('visitors', true, `${VISIT_COUNT} unique (redis)`);
+  } catch (e) { setStatus('visitors', false, e.message); }
 }
 let ROUTING_MODE = 'correlation'; // 'correlation' | 'momentum'
 try { ROUTING_MODE = JSON.parse(fs.readFileSync(ROUTING_MODE_FILE, 'utf8')).mode || 'correlation'; } catch {}
@@ -1274,12 +1337,14 @@ const server = http.createServer((req, res) => {
   }
   // visit counter API
   if (url === '/api/visits') {
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-    return res.end(JSON.stringify({ count: VISIT_COUNT }));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ count: VISIT_COUNT, unique: true, store: REDIS_OK ? 'redis' : 'local' }));
   }
 
-  // count homepage visits
-  if (url === '/') incrementVisit();
+  // Record the visitor on a homepage load. Deduplicated, so refreshes don't inflate it.
+  // Fire-and-forget: never make the page wait on the counter.
+  if (url === '/') recordVisit(req).catch(() => {});
 
   // static
   let fp = path.join(__dirname, 'public', url === '/' ? 'index.html' : url);
@@ -1311,6 +1376,7 @@ async function cryptoCycle() { await pollCG(); derive(); broadcast(); }
   pollFRED().then(pollTreasury).catch(e => console.error('fred/treasury:', e.message));
   pollNSE(); pollSE().then(() => { backfillSE().then(() => computeCorrelationWeights()); });
   pollNSEQuotes(); pollNSEStocks(); pollNews();
+  loadVisitCount();   // pull the persisted unique-visitor total from Redis
   computeCorrelationWeights();
   setInterval(computeCorrelationWeights, 24 * 60 * 60_000);
 

@@ -632,32 +632,10 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
   <div style="flex:1;overflow:hidden;display:flex;align-items:center">
     <div class="tickertrack" id="tickertrack"></div>
   </div>
-  <div id="visit-counter" style="
-    flex-shrink:0;display:flex;align-items:center;gap:6px;
-    padding:0 14px;border-left:1px solid var(--line);
-    font-family:var(--mono);font-size:9.5px;color:var(--mut);white-space:nowrap;
-    background:rgba(6,10,16,.95)">
-    <span style="width:6px;height:6px;border-radius:50%;background:var(--in);display:inline-block;flex-shrink:0;box-shadow:0 0 6px var(--in)"></span>
-    <span id="visit-count">—</span> visitors
-  </div>
 </div>
 
 <script>
 const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
-
-/* ── Unique visitor counter ──
-   Server dedupes by hashed IP+UA, so this is distinct people, not page loads.
-   Refreshed every 5 min so a long-open tab doesn't show a stale number. */
-async function loadVisitCount(){
-  try{
-    const r=await fetch('/api/visits',{cache:'no-store'});
-    const d=await r.json();
-    const el=$('#visit-count');
-    if(el&&d.count!=null) el.textContent=d.count.toLocaleString('en-IN');
-  }catch{}
-}
-setTimeout(loadVisitCount,2000);
-setInterval(loadVisitCount,5*60*1000);
 
 /* ── Dark / Light mode ── */
 function toggleTheme(){
@@ -2058,18 +2036,50 @@ function setConn(bad,msg){
   const c=$('#conn');c.textContent=msg||'';c.className='conn'+(bad?' show':'');
   $('#conndot').className='pulse'+(bad?' dc':'');
 }
-let es=null;
+let es=null,bootTries=0;
+/* A snapshot can arrive structurally valid but empty — the server was cold and had
+   no quotes yet. Rendering that paints a wall of em-dashes, which is what "data not
+   refreshed on opening" looked like. Treat it as not-ready and retry quickly. */
+function snapHasData(s){
+  if(!s||!s.indices)return false;
+  return s.indices.filter(x=>x.q&&x.q.price!=null).length>=5;
+}
 async function boot(){
+  bootTries++;
   try{
-    const r=await fetch(API+'/api/snapshot');
+    const r=await fetch(API+'/api/snapshot',{cache:'no-store'});
     if(!r.ok)throw 0;
-    SNAP=await r.json();setConn(false);try{renderAll();}catch(re){console.error('renderAll error:',re);}
-  }catch(e){setConn(true,'BACKEND OFFLINE — run: node server.js → http://localhost:8787');setTimeout(boot,10000);return;}
+    const d=await r.json();
+    if(!snapHasData(d)){
+      /* server still warming — back off gently, up to ~30s, then show what we have */
+      setConn(true,'WARMING UP — FETCHING LIVE DATA');
+      if(bootTries<12){setTimeout(boot,2500);return;}
+    }
+    SNAP=d;setConn(false);try{renderAll();}catch(re){console.error('renderAll error:',re);}
+  }catch(e){
+    setConn(true,'RECONNECTING…');
+    setTimeout(boot,Math.min(2000*bootTries,10000));return;
+  }
   if(es)return;
   es=new EventSource(API+'/api/stream');
   es.onmessage=ev=>{SNAP=JSON.parse(ev.data);renderAll();setConn(false);if(globe&&globe.buildFlowArcs)globe.buildFlowArcs();};
-  es.onerror=()=>setConn(true,'STREAM DROPPED — RETRYING');
+  es.onerror=()=>{
+    setConn(true,'STREAM DROPPED — RETRYING');
+    /* EventSource auto-reconnects, but if the server was replaced (redeploy) the
+       stream can stay dead. Re-pull a snapshot so the page is never stuck stale. */
+    setTimeout(()=>{fetch(API+'/api/snapshot',{cache:'no-store'})
+      .then(r=>r.json()).then(d=>{if(snapHasData(d)){SNAP=d;renderAll();setConn(false);}})
+      .catch(()=>{});},5000);
+  };
 }
+/* Coming back to a backgrounded tab: pull fresh data immediately rather than waiting
+   for the next SSE push, which may be up to 30s away. */
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState!=='visible')return;
+  fetch(API+'/api/snapshot',{cache:'no-store'})
+    .then(r=>r.json()).then(d=>{if(snapHasData(d)){SNAP=d;renderAll();setConn(false);}})
+    .catch(()=>{});
+});
 $$('.tab').forEach(t=>t.addEventListener('click',()=>{
   $$('.tab').forEach(x=>x.classList.remove('active'));t.classList.add('active');
   $$('.screen').forEach(s=>s.classList.remove('active'));

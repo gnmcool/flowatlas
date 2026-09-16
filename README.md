@@ -62,7 +62,6 @@ Get a free FRED API key at [fred.stlouisfed.org](https://fred.stlouisfed.org/doc
 | `/api/stream` | SSE live updates (~20s cadence) |
 | `/api/health` | Poller status + data ages |
 | `/api/routing-mode` | GET/POST the Sankey routing mode |
-| `/api/visits` | Visit counter |
 
 ---
 

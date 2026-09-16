@@ -74,6 +74,13 @@ const N50 = [ // [yahoo base, approx index weight]
   ['EICHERMOT',.6],['APOLLOHOSP',.6],['TATACONSUM',.6],['BEL',.6],['JIOFIN',.6],['INDUSINDBK',.5],
   ['BRITANNIA',.5],['HEROMOTOCO',.5],['BPCL',.5],['SHRIRAMFIN',.5]];
 const NIFTY50 = N50.map(([b, w]) => ({ s: b + '.NS', n: b, w }));
+/* Index weights by symbol. The N50 list above is a static snapshot and goes stale
+   every time NSE reconstitutes the index (TATAMOTORS, INDUSINDBK, BRITANNIA,
+   HEROMOTOCO and BPCL were all dropped and left permanently blank tiles). NSE
+   returns the authoritative constituent list on every poll, so we let that drive
+   the panel and use this map only for tile sizing. Unknown symbols get a default. */
+const N50_W = Object.fromEntries(N50.map(([b, w]) => [b, w]));
+let N50_LIVE = [];   // [{n, price, chg}] — authoritative list, refreshed by pollNSEStocks
 const MACRO = [{ s: '^VIX', n: 'VIX' }, { s: 'DX-Y.NYB', n: 'DXY' }];
 const BONDS = [ /* CBOE yield indices: price/10 = yield% */
   { s: '^IRX', n: 'US 3M', div: 1 }, { s: '^FVX', n: 'US 5Y', div: 1 },
@@ -876,6 +883,7 @@ async function pollNSEStocks() {
     const rows = j?.data?.data;
     if (!Array.isArray(rows)) { setStatus('nse-stocks', false, 'unexpected payload shape'); return; }
     let updated = 0;
+    const live = [];
     for (const row of rows) {
       if (!row.series) continue;                       // index row, not a constituent
       const base = (row.symbol || '').trim();
@@ -894,9 +902,11 @@ async function pollNSEStocks() {
         price, changePct: chg,
         spark: existing?.spark || [], ts: Date.now(), src: 'NSE_RT',
       };
+      live.push({ n: base, price, chg });
       updated++;
     }
-    setStatus('nse-stocks', updated > 0, `${updated}/50 constituents real-time`);
+    if (live.length) N50_LIVE = live;
+    setStatus('nse-stocks', updated > 0, `${updated}/${rows.length - 1} constituents real-time`);
     if (updated) { derive(); broadcast(); }
   } catch (e) { NSE_COOKIES = { v: '', ts: 0 }; setStatus('nse-stocks', false, e.message); }
 }
@@ -1119,7 +1129,11 @@ function derive() {
     idx: INDIA_IDX.map(x => ({ n: x.n, price: q(x.s)?.price ?? null, chg: q(x.s)?.changePct ?? null, spark: q(x.s)?.spark ?? null })),
     sectors: INDIA_SECTORS.map(x => ({ n: x.n, price: q(x.s)?.price ?? null, chg: q(x.s)?.changePct ?? null }))
       .filter(x => x.chg != null).sort((a, b) => b.chg - a.chg),
-    nifty50: NIFTY50.map(x => ({ n: x.n, w: x.w, price: q(x.s)?.price ?? null, chg: q(x.s)?.changePct ?? null })),
+    /* Prefer NSE's authoritative constituent list; fall back to the static snapshot
+       only if NSE has not responded yet (e.g. first seconds after a cold start). */
+    nifty50: N50_LIVE.length
+      ? N50_LIVE.map(x => ({ n: x.n, w: N50_W[x.n] ?? 0.5, price: x.price, chg: x.chg }))
+      : NIFTY50.map(x => ({ n: x.n, w: x.w, price: q(x.s)?.price ?? null, chg: q(x.s)?.changePct ?? null })),
     usdinr: { price: q('INR=X')?.price ?? null, chg: q('INR=X')?.changePct ?? null },
     fiiLatest: lastRowI,
   };

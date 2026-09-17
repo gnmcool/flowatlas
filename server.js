@@ -1015,6 +1015,67 @@ async function pollFRED() {
   } catch (e) { STATE.fred.error = e.message; setStatus('fred', false, e.message); }
 }
 
+/* ---------------- trailing history for relative sentiment scoring -------------------
+ * Fear & Greed was scored against FIXED bands: VIX on a 10–45 scale, HY OAS on 2–6%.
+ * That measures "are levels comfortable in absolute terms", not sentiment. It read
+ * 69 (greed) on a day CNN's index read 28 (fear) — because VIX at 16 looks calm on an
+ * absolute scale while sitting ABOVE its 50-day average, which is the stressed signal.
+ *
+ * Sentiment indices are conventionally relative: each input is compared to its own
+ * recent history. These helpers fetch the daily closes needed for that, cached for
+ * six hours since moving averages barely move intraday.
+ * -----------------------------------------------------------------------------------*/
+const DAILY_CACHE = new Map();          // sym|range -> {ts, closes[]}
+const DAILY_TTL = 6 * 60 * 60_000;
+
+async function fetchDaily(sym, range = '9mo') {
+  const key = sym + '|' + range;
+  const c = DAILY_CACHE.get(key);
+  if (c && Date.now() - c.ts < DAILY_TTL) return c.closes;
+  try {
+    const d = await jget(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=${range}`,
+      { Accept: 'application/json' }, 10000);
+    const closes = (d?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []).filter(x => x != null);
+    if (closes.length > 20) { DAILY_CACHE.set(key, { ts: Date.now(), closes }); return closes; }
+  } catch (e) { /* leave whatever was cached */ }
+  return c ? c.closes : null;
+}
+
+const sma = (a, n) => (!a || a.length < n) ? null : a.slice(-n).reduce((x, y) => x + y, 0) / n;
+const retN = (a, n) => (!a || a.length < n + 1) ? null : (a[a.length - 1] / a[a.length - 1 - n] - 1) * 100;
+
+/* Indices used for breadth — compared to their OWN 20d average rather than counting
+   today's sign, so a market that closed hours ago is treated consistently with one
+   still trading. The old count-today's-gainers breadth mixed sessions. */
+const BREADTH_SYMS = INDICES.filter(x => x.t12).map(x => x.s);
+
+async function pollFGHistory() {
+  try {
+    const [vixH, spxH, tltH] = await Promise.all([
+      fetchDaily('^VIX', '6mo'), fetchDaily('^GSPC', '12mo'), fetchDaily('TLT', '3mo'),
+    ]);
+    let above = 0, counted = 0;
+    for (const s of BREADTH_SYMS) {
+      const h = await fetchDaily(s, '3mo');
+      const ma = sma(h, 20);
+      if (ma == null) continue;
+      counted++;
+      if (h[h.length - 1] > ma) above++;
+    }
+    STATE.fgHist = {
+      vixMA50:  sma(vixH, 50),
+      spxMA125: sma(spxH, 125),
+      spx20d:   retN(spxH, 20),
+      tlt20d:   retN(tltH, 20),
+      breadthAboveMA: counted ? (above / counted) * 100 : null,
+      breadthCounted: counted,
+      ts: Date.now(),
+    };
+    setStatus('fg-history', true,
+      `VIX MA50 ${STATE.fgHist.vixMA50?.toFixed(1)}, SPX MA125 ${STATE.fgHist.spxMA125?.toFixed(0)}, breadth ${above}/${counted}`);
+  } catch (e) { setStatus('fg-history', false, e.message); }
+}
+
 /* ---------------- derived analytics (all tagged DERIVED) ---------------- */
 function q(sym) { return STATE.quotes[sym] || null; }
 function derive() {
@@ -1037,58 +1098,106 @@ function derive() {
   // US cash session: 09:30–16:00 ET = 19:00–00:30 IST (next day)
   const nowUtcH = new Date().getUTCHours();
   const usCashOpen = nowUtcH >= 13 && nowUtcH < 21; // 09:30–16:00 ET in UTC
-  /* ── Volatility factor ─────────────────────────────────────────────────────────
-   * Previously this SWITCHED between VIX and ES futures depending on the clock,
-   * which produced a large step change twice a day for no market reason: at
-   * VIX 16 the live formula reads ~83, while the futures formula at ES +0.8%
-   * read 58 — a 25-point jump in the factor, ~5 points on the headline, caused
-   * purely by the US session ending.
+  /* ══ FEAR & GREED — scored RELATIVE to trailing history ═══════════════════════════
+   * Every factor is now measured against its own recent average rather than a fixed
+   * band. The previous absolute scoring produced 69 (greed) on a day CNN's index read
+   * 28 (fear): VIX at 16 scores 89 on a 10–45 band while simultaneously sitting ABOVE
+   * its 50-day average, which is the stressed reading. Levels and sentiment are not
+   * the same quantity, and this index claims to measure the second.
    *
-   * VIX is the actual volatility expectation and stays meaningful after the close
-   * (it is a forward-looking 30-day measure, not an intraday tick). So anchor on
-   * VIX always, and let overnight futures NUDGE it rather than replace it. The
-   * adjustment is capped so a violent futures session can't dominate the gauge. */
-  let vixScore = vix ? clamp((45 - vix.price) / 35 * 100, 0, 100) : 50;
-  let vixBasis = vix ? 'VIX' : 'none';
-  if (!usCashOpen && esFut?.changePct != null && vix) {
-    vixScore = clamp(vixScore + clamp(esFut.changePct * 8, -20, 20), 0, 100);
-    vixBasis = 'VIX + overnight futures';
-  } else if (!vix && esFut?.changePct != null) {
-    vixScore = clamp(50 + esFut.changePct * 10, 0, 100);   // last resort, no VIX at all
-    vixBasis = 'futures only (VIX unavailable)';
+   * Five factors, each 0–100, 50 = neutral (in line with its own recent norm):
+   *   volatility  VIX vs 50d average          — above average = fear
+   *   momentum    S&P 500 vs 125d average     — the trend input that was missing
+   *   credit      HY OAS vs 20d average       — widening = fear
+   *   safeHaven   S&P 20d return − TLT 20d    — stocks beating bonds = greed
+   *   breadth     % of world indices > own 20d average
+   *
+   * Breadth compares each index to its OWN average instead of counting today's
+   * gainers, so a market that closed hours ago is treated consistently with one still
+   * trading. The old version counted Asia's close against the US mid-session.
+   *
+   * Falls back to the absolute formulation per-factor when history is unavailable,
+   * and reports which basis each factor used. */
+  const H = STATE.fgHist || {};
+  const hy = STATE.fred.data.BAMLH0A0HYM2;
+  const basis = {};
+  /* Same-day index moves. Still needed by the asset-rotation block below, and used
+     as the breadth fallback when trailing history has not loaded. */
+  const idxChgs = INDICES.map(i => q(i.s)?.changePct).filter(x => x != null);
+
+  // 1. Volatility — VIX relative to its 50-day average
+  let volScore;
+  if (vix && H.vixMA50) {
+    const rel = vix.price / H.vixMA50 - 1;           // +0.20 = 20% above average
+    volScore = clamp(50 - rel * 250, 0, 100);        // ±20% spans the full range
+    basis.volatility = `VIX ${vix.price.toFixed(1)} vs 50d avg ${H.vixMA50.toFixed(1)}`;
+  } else if (vix) {
+    volScore = clamp((45 - vix.price) / 35 * 100, 0, 100);
+    basis.volatility = 'VIX absolute band (history unavailable)';
+  } else { volScore = 50; basis.volatility = 'unavailable'; }
+
+  // 2. Momentum — S&P 500 versus its 125-day average. Previously absent entirely,
+  //    which is why a sustained drawdown left the index reading greed.
+  let momScore;
+  const spxNow = q('^GSPC')?.price;
+  if (spxNow && H.spxMA125) {
+    const rel = spxNow / H.spxMA125 - 1;
+    momScore = clamp(50 + rel * 500, 0, 100);        // ±10% spans the full range
+    basis.momentum = `S&P ${Math.round(spxNow)} vs 125d avg ${Math.round(H.spxMA125)}`;
+  } else { momScore = 50; basis.momentum = 'unavailable'; }
+
+  // 3. Credit — HY OAS versus its own 20-day average, not a fixed 2–6% band
+  let creditScore;
+  const creditLive = !!(hy && hy.length);
+  if (creditLive && hy.length >= 20) {
+    const oas = hy[0].v;
+    const ma20 = hy.slice(0, 20).reduce((a, b) => a + b.v, 0) / 20;
+    creditScore = clamp(50 - (oas / ma20 - 1) * 400, 0, 100);
+    basis.credit = `HY OAS ${oas.toFixed(2)}% vs 20d avg ${ma20.toFixed(2)}%`;
+  } else if (creditLive) {
+    creditScore = clamp((6 - hy[0].v) / 4 * 100, 0, 100);
+    basis.credit = 'HY OAS absolute band (short history)';
+  } else { creditScore = 50; basis.credit = 'PLACEHOLDER — FRED not loaded'; }
+
+  // 4. Safe-haven demand — stocks versus bonds over 20 days
+  let havenScore;
+  if (H.spx20d != null && H.tlt20d != null) {
+    havenScore = clamp(50 + (H.spx20d - H.tlt20d) * 5, 0, 100);
+    basis.safeHaven = `S&P 20d ${H.spx20d.toFixed(1)}% vs TLT ${H.tlt20d.toFixed(1)}%`;
+  } else { havenScore = 50; basis.safeHaven = 'unavailable'; }
+
+  // 5. Breadth — share of world indices above their own 20-day average
+  let breadthScore;
+  if (H.breadthAboveMA != null) {
+    breadthScore = H.breadthAboveMA;
+    basis.breadth = `${Math.round(H.breadthAboveMA)}% of ${H.breadthCounted} indices above 20d avg`;
+  } else {
+    breadthScore = idxChgs.length ? idxChgs.filter(x => x > 0).length / idxChgs.length * 100 : 50;
+    basis.breadth = 'same-day gainers (history unavailable)';
   }
 
-  /* ── Yield factor ──────────────────────────────────────────────────────────────
-   * This used ES futures overnight, which meant vix and yld were BOTH derived from
-   * esFut — two of five factors perfectly correlated, handing S&P futures 40% of
-   * the index while presenting as independent signals.
-   *
-   * ^TNX carries the last completed session's yield move whether or not the cash
-   * market is open, so use it unconditionally. Outside US hours it simply reports
-   * the most recent real move, which is honest, rather than inferring yields from
-   * equity futures. */
-  const yldScore = tnx ? clamp(50 - tnx.changePct * 8, 0, 100) : 50;
-
-  const idxChgs = INDICES.map(i => q(i.s)?.changePct).filter(x => x != null);
-  const breadth = idxChgs.length ? idxChgs.filter(x => x > 0).length / idxChgs.length * 100 : 50;
-  const hy = STATE.fred.data.BAMLH0A0HYM2;
   const f = {
-    vix: vixScore,
-    yld: yldScore,
-    dxy: dxy ? clamp(50 - dxy.changePct * 20, 0, 100) : 50,              // dollar up = risk-off
-    breadth,
-    credit: hy && hy.length ? clamp((6 - hy[0].v) / 4 * 100, 0, 100) : 50, // HY OAS 2%→100, 6%→0
+    volatility: volScore,
+    momentum:   momScore,
+    credit:     creditScore,
+    safeHaven:  havenScore,
+    breadth:    breadthScore,
   };
-  const fgMode = (!usCashOpen && esFut) ? 'FUTURES' : 'LIVE';
-  /* creditLive is false when FRED has not landed yet — the 50 in that case is a
-     neutral placeholder, not a measurement, and the UI should say so rather than
-     presenting a fabricated fifth of the score as real. */
-  const creditLive = !!(hy && hy.length);
-  d.fearGreed = { score: Math.round((f.vix + f.yld + f.dxy + f.breadth + f.credit) / 5), factors: f, mode: fgMode,
-    basis: { vix: vixBasis, yld: tnx ? 'US10Y last session' : 'unavailable',
-             credit: creditLive ? 'HY OAS (FRED)' : 'PLACEHOLDER — FRED not loaded' },
-    creditLive,
-    inputs: { vix: vix?.price, esFut: esFut?.changePct, us10y: tnx ? tnx.price : null, dxy: dxy?.price, hyOAS: hy?.[0]?.v ?? null, usCashOpen } };
+  const relativeCount = Object.values(basis).filter(b => !/unavailable|PLACEHOLDER|absolute|same-day/.test(b)).length;
+  const fgMode = relativeCount >= 4 ? 'RELATIVE' : relativeCount >= 2 ? 'PARTIAL' : 'DEGRADED';
+  const vals = Object.values(f);
+  d.fearGreed = {
+    score: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length),
+    factors: f, mode: fgMode, basis, creditLive,
+    relativeFactors: relativeCount,
+    inputs: {
+      vix: vix?.price, vixMA50: H.vixMA50 ?? null,
+      spx: spxNow ?? null, spxMA125: H.spxMA125 ?? null,
+      hyOAS: hy?.[0]?.v ?? null,
+      spx20d: H.spx20d ?? null, tlt20d: H.tlt20d ?? null,
+      us10y: tnx ? tnx.price : null, dxy: dxy?.price, usCashOpen,
+    },
+  };
 
   /* Country flow proxies: index move x cap weight (NOT real flows) */
   d.countries = COUNTRY_MAP.map(c => {
@@ -1245,7 +1354,10 @@ function derive() {
   if (vix) ins.push({
     c: fg >= 55 ? 'bull' : fg <= 45 ? 'bear' : '',
     t: fg >= 55 ? 'Risk-on regime' : fg <= 45 ? 'Risk-off regime' : 'Neutral regime',
-    d: `Fear & Greed ${fg}. VIX ${vix.price.toFixed(1)}, breadth ${Math.round(breadth)}% of tracked indices positive, DXY ${dxy ? (dxy.changePct >= 0 ? '+' : '') + dxy.changePct.toFixed(2) + '%' : 'n/a'}.` });
+    d: `Fear & Greed ${fg} (scored vs trailing averages). VIX ${vix.price.toFixed(1)}`
+      + (H.vixMA50 ? ` vs 50d avg ${H.vixMA50.toFixed(1)}` : '')
+      + `, ${Math.round(breadthScore)}% of tracked indices above their 20d average`
+      + `, DXY ${dxy ? (dxy.changePct >= 0 ? '+' : '') + dxy.changePct.toFixed(2) + '%' : 'n/a'}.` });
   if (d.sectors.length) ins.push({ c: 'bull', t: `${d.sectors[0].n} leads sector tape`,
     d: `${d.sectors[0].n} ${d.sectors[0].chgPct >= 0 ? '+' : ''}${d.sectors[0].chgPct}% vs ${d.sectors[d.sectors.length - 1].n} ${d.sectors[d.sectors.length - 1].chgPct}% — ${(d.sectors[0].chgPct - d.sectors[d.sectors.length - 1].chgPct).toFixed(1)}pp dispersion (ETF proxy).` });
   const au = q('GC=F');
@@ -1307,6 +1419,10 @@ function warmUp(maxMs = 6000) {
          loaded, since these series only change daily/weekly. */
       (STATE.fred.data.BAMLH0A0HYM2?.length ? Promise.resolve()
         : pollFRED().then(pollTreasury).catch(() => {})),
+      /* Trailing averages for relative Fear & Greed scoring. Without these the
+         index silently falls back to fixed absolute bands, which is the scoring
+         that read greed while CNN read fear. Cached 6h, so this is a no-op once warm. */
+      (STATE.fgHist?.vixMA50 ? Promise.resolve() : pollFGHistory().catch(() => {})),
     ]),
     new Promise(r => setTimeout(r, maxMs)),
   ]).then(() => { derive(); LAST_POLL = Date.now(); })
@@ -1433,6 +1549,8 @@ async function cryptoCycle() { await pollCG(); derive(); broadcast(); }
   pollFRED().then(pollTreasury).catch(e => console.error('fred/treasury:', e.message));
   pollNSE(); pollSE().then(() => { backfillSE().then(() => computeCorrelationWeights()); });
   pollNSEQuotes(); pollNSEStocks(); pollNews();
+  pollFGHistory();                              // trailing averages for relative F&G
+  setInterval(pollFGHistory, 60 * 60_000);      // refresh hourly; underlying cache is 6h
   computeCorrelationWeights();
   setInterval(computeCorrelationWeights, 24 * 60 * 60_000);
 

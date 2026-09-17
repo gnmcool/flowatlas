@@ -1241,27 +1241,31 @@ function rGauge(){
   svg.innerHTML=h;
   $('#fgval').textContent=v;$('#fgval').style.color=col;
   $('#fgname').textContent=name;$('#fgname').style.color=col;
-  const isFut=fg.mode==='FUTURES';
-  /* VIX is now the anchor at all times, nudged by overnight futures rather than
-     replaced by them, so the label reflects that instead of claiming "ES FUTURES". */
+  /* Factors are scored against their own trailing averages, so each label states the
+     comparison being made rather than just the current level. 50 = in line with the
+     recent norm; the number alone is meaningless without the baseline. */
+  const i=fg.inputs||{},b=fg.basis||{};
   const lbl={
-    vix: isFut?`VIX ${fmt(fg.inputs.vix,1)} ± o/n fut`:`VIX ${fmt(fg.inputs.vix,1)}`,
-    yld: `US10Y ${fmt(fg.inputs.us10y,2)}%${isFut?' (last sess)':''}`,
-    dxy:`DXY ${fmt(fg.inputs.dxy,1)}`,breadth:'GLOBAL BREADTH',
-    credit:fg.creditLive?`HY OAS ${fmt(fg.inputs.hyOAS,2)}%`:'HY OAS — NOT LOADED'
+    volatility: i.vixMA50?`VIX ${fmt(i.vix,1)} vs 50d ${fmt(i.vixMA50,1)}`:`VIX ${fmt(i.vix,1)}`,
+    momentum:   i.spxMA125?`S&P vs 125d avg`:'S&P MOMENTUM',
+    credit:     fg.creditLive?`HY OAS ${fmt(i.hyOAS,2)}% vs 20d`:'HY OAS — NOT LOADED',
+    safeHaven:  (i.spx20d!=null)?`STOCKS vs BONDS 20D`:'SAFE HAVEN',
+    breadth:    'INDICES ABOVE 20D AVG'
   };
   $('#fgfactors').innerHTML=Object.entries(fg.factors).map(([k,val])=>{
-    /* A placeholder factor must not look like a measurement — grey the bar and
-       dim the row so a neutral 50 standing in for missing data is visible. */
-    const placeholder=(k==='credit'&&!fg.creditLive);
-    const barCol=placeholder?'var(--dim)':(val>55?'var(--in)':val>40?'var(--gold)':'var(--out)');
-    return `<div class="sf"${placeholder?' style="opacity:.55"':''}><span>${lbl[k]}</span><div class="bar"><i style="width:${val}%;background:${barCol}"></i></div><span class="v">${placeholder?'—':Math.round(val)}</span></div>`;
+    /* A factor running on a fallback basis must not look like a measurement — grey
+       the bar and dim the row so degraded inputs are visible rather than silent. */
+    const degraded=/unavailable|PLACEHOLDER/.test(b[k]||'');
+    const barCol=degraded?'var(--dim)':(val>55?'var(--in)':val>40?'var(--gold)':'var(--out)');
+    return `<div class="sf"${degraded?' style="opacity:.55"':''} title="${(b[k]||'').replace(/"/g,'')}"><span>${lbl[k]||k}</span><div class="bar"><i style="width:${val}%;background:${barCol}"></i></div><span class="v">${degraded?'—':Math.round(val)}</span></div>`;
   }).join('');
-  // Mode badge: LIVE during US hours, FUTURES-ADJUSTED when US cash market closed
   const modeEl=$('#fg-mode');
   if(modeEl){
-    if(!fg.creditLive){modeEl.textContent='⬡ PARTIAL — CREDIT MISSING';modeEl.style.color='var(--out)';}
-    else{modeEl.textContent=isFut?'⬡ FUTURES-ADJUSTED':'⬡ LIVE';modeEl.style.color=isFut?'var(--gold)':'var(--in)';}
+    const m=fg.mode;
+    modeEl.textContent=m==='RELATIVE'?'⬡ vs TRAILING AVG'
+      :m==='PARTIAL'?'⬡ PARTIAL DATA':'⬡ DEGRADED';
+    modeEl.style.color=m==='RELATIVE'?'var(--in)':m==='PARTIAL'?'var(--gold)':'var(--out)';
+    modeEl.title=Object.entries(b).map(([k,v])=>`${k}: ${v}`).join('\n');
   }
   const r=$('#regime'),on=SNAP.derived.regime==='RISK-ON';
   r.textContent=SNAP.derived.regime;r.className='regime '+(on?'on':'off');

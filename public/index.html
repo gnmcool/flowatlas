@@ -42,9 +42,6 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
   .logo-wordmark{font-size:14px!important}
   .cred{display:none}
 }
-.regime{font-family:var(--mono);font-size:10px;letter-spacing:.14em;padding:4px 10px;border:1px solid;border-radius:3px}
-.regime.on{color:var(--in);border-color:rgba(0,229,155,.4);background:rgba(0,229,155,.07)}
-.regime.off{color:var(--out);border-color:rgba(255,77,106,.4);background:rgba(255,77,106,.07)}
 .conn{display:none;font-family:var(--mono);font-size:9px;letter-spacing:.14em;padding:3px 8px;border-radius:3px;
   border:1px solid rgba(255,77,106,.45);color:var(--out)}
 .conn.show{display:inline}
@@ -302,7 +299,6 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
   .cmdbar{padding:7px 10px;gap:7px;flex-wrap:nowrap}
   .cred{display:none}
   .clock{font-size:9.5px;margin-left:auto}
-  .regime{font-size:8.5px;padding:3px 6px;letter-spacing:.06em}
   #theme-toggle{padding:4px 7px;font-size:13px}
 
   /* --- tabs sticky offset accounts for mobile-cred bar --- */
@@ -437,7 +433,6 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
       </span>
     </span>
   </a>
-  <span id="regime" class="regime on">—</span>
   <span class="conn" id="conn"></span>
   <span class="cred">Developed by <b>CA Gaurav N. Makwana</b></span>
   <span class="clock" id="clock"></span>
@@ -1291,8 +1286,6 @@ function rGauge(){
     modeEl.style.color=m==='RELATIVE'?'var(--in)':m==='PARTIAL'?'var(--gold)':'var(--out)';
     modeEl.title=Object.entries(b).map(([k,v])=>`${k}: ${v}`).join('\n');
   }
-  const r=$('#regime'),on=SNAP.derived.regime==='RISK-ON';
-  r.textContent=SNAP.derived.regime;r.className='regime '+(on?'on':'off');
 }
 /* Market cap weights (USD trillions) for treemap sizing */
 const CC_CAP={US:48,CN:10,JP:6,DE:6,IN:4.5,HK:5,FR:3,UK:3.2,TW:2,KR:2,SG:1,TH:0.8,ID:0.8,BR:1.2,AU:1.6};

@@ -1347,9 +1347,14 @@ function derive() {
     d: `USD/INR ${inr.changePct >= 0 ? '+' : ''}${inr.changePct.toFixed(2)}% today. ${inr.changePct > 0.15 ? 'Depreciation pressure typically accompanies FII outflows.' : 'Stable currency supports foreign positioning.'}` });
   d.india.insights = iIns;
 
-  /* Regime + rule-based insights from real values */
+  /* Rule-based insights from real values.
+   *
+   * The RISK-ON / RISK-OFF header badge is gone. It was a hard binary at exactly 50
+   * while the gauge beside it has a neutral band, so at a score of 49 the gauge read
+   * "Neutral" and the badge read "RISK-OFF" — two elements describing the same number
+   * and disagreeing. The gauge already conveys this, with gradation the badge lacked.
+   * The insight below keeps the regime wording, where it has room for a neutral case. */
   const fg = d.fearGreed.score;
-  d.regime = fg >= 50 ? 'RISK-ON' : 'RISK-OFF';
   const ins = [];
   if (vix) ins.push({
     c: fg >= 55 ? 'bull' : fg <= 45 ? 'bear' : '',

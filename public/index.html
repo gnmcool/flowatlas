@@ -139,6 +139,22 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
 
 /* ---------- sankey ---------- */
 #sankey{width:100%;height:400px}
+/* Mobile flow list — hidden on desktop, replaces the SVG below 620px */
+#sankey-mobile{display:none}
+.mflow-src{margin-top:12px}
+.mflow-src:first-child{margin-top:2px}
+.mflow-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+  font-family:var(--mono);font-size:10.5px;color:var(--txt);
+  padding-bottom:5px;border-bottom:1px solid var(--line)}
+.mflow-head .tot{color:var(--mut);font-size:10px;white-space:nowrap}
+.mflow-row{display:grid;grid-template-columns:1fr 46px;align-items:center;gap:8px;
+  padding:6px 0 5px;font-family:var(--mono);font-size:10.5px}
+.mflow-row .dst{display:flex;align-items:center;gap:6px;min-width:0}
+.mflow-row .dst span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mflow-row .arr{color:var(--dim);flex-shrink:0}
+.mflow-row .val{text-align:right;font-variant-numeric:tabular-nums;color:var(--txt)}
+.mflow-bar{grid-column:1/-1;height:5px;background:#101a26;border-radius:3px;overflow:hidden;margin-top:-2px}
+.mflow-bar i{display:block;height:100%;border-radius:3px;transition:width .6s ease}
 .snode text{font-family:var(--mono);font-size:10.5px;fill:var(--txt)}
 .snode .amt{fill:var(--mut);font-size:9.5px}
 .slink{fill:none;opacity:.32}
@@ -318,9 +334,12 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
   .isrow{grid-template-columns:60px 1fr 70px;font-size:9px;gap:5px}
   .isrow .track{height:10px}
 
-  /* --- sankey: horizontal scroll so it doesn't squish --- */
-  #sankey-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
-  #sankey{height:320px;min-width:420px}
+  /* --- sankey: swap the SVG for the vertical flow list ---
+     Horizontal scrolling was the previous workaround, but it meant you could never
+     see a source and its destination at the same time, which is the whole point of
+     the diagram. The list shows every link without scrolling. */
+  #sankey-wrap{display:none}
+  #sankey-mobile{display:block}
 
   /* --- sector wheel: hide wheel, show bars only --- */
   #wheelwrap{display:none!important}
@@ -482,6 +501,11 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
       <span id="corr-stats" style="font-size:9px;color:var(--mut);opacity:.7"></span>
     </div>
     <div id="sankey-wrap"><svg id="sankey"></svg></div>
+    <!-- Mobile alternative to the Sankey. The SVG reserves 200px per side for node
+         labels (400px total) which cannot fit a phone, so below 600px we show the
+         same links as a vertical list instead. CSS picks which one is visible so the
+         breakpoint can never desync from the stylesheet. -->
+    <div id="sankey-mobile"></div>
   </div>
   <div class="grid g-2" style="margin-top:12px">
     <div class="panel">
@@ -1352,9 +1376,42 @@ function rRoutingBadge(){
     stats.textContent='Destinations weighted by same-day price momentum (legacy)';
   }
 }
+/* Vertical flow list for narrow screens — same links as the Sankey, grouped by
+   source, with bar width proportional to flow size. ★ marks measured NSE FII/DII
+   legs, matching the SVG's convention. */
+function rSankeyMobile(links){
+  const el=$('#sankey-mobile');if(!el)return;
+  const col={in:'#00E59B',out:'#FF4D6A',gold:'#E8B44C',liq:'#4DA8FF'};
+  const MEAS=new Set(links.filter(l=>l.m==='measured').flatMap(l=>[l.s,l.t]));
+  const max=Math.max(...links.map(l=>l.v))||1;
+  const bySrc={};
+  links.forEach(l=>{(bySrc[l.s]=bySrc[l.s]||[]).push(l);});
+  /* Largest source first, and measured legs ahead of proxies within each source */
+  const order=Object.keys(bySrc).sort((a,b)=>
+    bySrc[b].reduce((s,l)=>s+l.v,0)-bySrc[a].reduce((s,l)=>s+l.v,0));
+  el.innerHTML=order.map(src=>{
+    const rows=bySrc[src].slice().sort((a,b)=>b.v-a.v);
+    const tot=rows.reduce((s,l)=>s+l.v,0);
+    return `<div class="mflow-src">
+      <div class="mflow-head"><span>${src}${MEAS.has(src)?' ★':''}</span><span class="tot">${fmt(tot,1)}</span></div>
+      ${rows.map(l=>`<div class="mflow-row">
+        <div class="dst"><span class="arr">→</span><span style="color:${col[l.c]}">${l.t}</span></div>
+        <div class="val">${fmt(l.v,1)}</div>
+        <div class="mflow-bar"><i style="width:${Math.max(3,l.v/max*100)}%;background:${col[l.c]};opacity:${l.m==='measured'?1:.45}"></i></div>
+      </div>`).join('')}
+    </div>`;
+  }).join('');
+}
+
 function rSankey(){
   rRoutingBadge();
-  const links=SNAP.derived.sankey;if(!links||!links.length){$('#sankey').innerHTML='';return;}
+  const links=SNAP.derived.sankey;
+  if(!links||!links.length){$('#sankey').innerHTML='';const m=$('#sankey-mobile');if(m)m.innerHTML='';return;}
+  /* Render both; CSS decides which is visible at the current width. */
+  rSankeyMobile(links);
+  /* Skip the SVG maths entirely when it is hidden — clientWidth is 0 for a
+     display:none element, which would otherwise produce a degenerate layout. */
+  if(!$('#sankey').clientWidth)return;
   const svg=$('#sankey'),W=svg.clientWidth||1000,H=400;
   svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
   const srcs=[...new Set(links.map(l=>l.s))],dsts=[...new Set(links.map(l=>l.t))];

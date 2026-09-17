@@ -382,7 +382,10 @@ const CORR_SYMS = [
   { t: 'US Tech',        s: 'XLK',  c: 'in'   },
   { t: 'Gold',           s: 'GLD',  c: 'gold'  },
   { t: 'US Treasuries',  s: 'TLT',  c: 'liq'   },
-  { t: 'Crypto',         s: 'IBIT', c: 'liq'   },
+  /* BTC-USD, not IBIT: the ETF only listed Jan-2024, so it cannot match any
+     FII-sell week before then regardless of how wide the lookback is. BTC-USD
+     has history back to 2014 and is the underlying rather than a wrapper. */
+  { t: 'Crypto',         s: 'BTC-USD', c: 'liq'   },
   { t: 'Cash / T-Bills', s: 'BIL',  c: 'out'   },
 ];
 
@@ -436,18 +439,31 @@ async function computeCorrelationWeights() {
     CORR_WEIGHTS = { mode: 'fallback', reason: 'too few FII-sell weeks (<10)' }; return;
   }
 
-  /* 2. Fetch weekly return series for each destination symbol */
+  /* 2. Fetch weekly return series for each destination symbol.
+   *
+   * This used to request '2y' while FIIHIST spans ~13 years. Every sell week older
+   * than the asset window silently produced null and was dropped by the filter
+   * below — 307 of 393 weeks discarded — yet the UI still reported the full 393.
+   * Ask for 10y so the windows actually overlap, and fall back to 2y per symbol if
+   * a long request comes back thin, so a Yahoo change degrades instead of breaking. */
   const assetMaps = {};
   for (const sym of CORR_SYMS) {
-    const hist = await fetchHistFull(sym.s, '2y');
+    let hist = await fetchHistFull(sym.s, '10y');
+    if (hist.length < 60) {
+      const short = await fetchHistFull(sym.s, '2y');
+      if (short.length > hist.length) hist = short;
+    }
     const map = {};
     for (const { date, ret } of hist) map[date] = ret;
     assetMaps[sym.s] = map;
     await new Promise(r => setTimeout(r, 300)); // gentle on Yahoo
   }
 
-  /* 3. On each FII-sell week, what did each asset do? → avg return */
+  /* 3. On each FII-sell week, what did each asset do? → avg return.
+   *    matchedPerAsset records how many weeks each symbol could actually answer
+   *    for, so the reported sample size reflects evidence rather than intent. */
   const weights = {};
+  const matchedPerAsset = {};
   for (const sym of CORR_SYMS) {
     const map = assetMaps[sym.s];
     const rets = sellWeeks.map(wk => {
@@ -460,6 +476,7 @@ async function computeCorrelationWeights() {
       }
       return null;
     }).filter(r => r != null);
+    matchedPerAsset[sym.t] = rets.length;
     const avg = rets.length ? rets.reduce((a, b) => a + b, 0) / rets.length : 0;
     weights[sym.t] = Math.max(0, avg); // only assets that historically RISE when FII sells India
   }
@@ -472,9 +489,17 @@ async function computeCorrelationWeights() {
   const normalized = {};
   for (const [k, v] of Object.entries(weights)) normalized[k] = +(v / wsum).toFixed(4);
 
-  CORR_WEIGHTS = { mode: 'correlation', weights: normalized, sellWeeks: sellWeeks.length,
+  /* Report the weeks that actually contributed. Assets have differing listing
+     dates, so quote the weakest — the weights are only as good as the thinnest leg. */
+  const matchedCounts = Object.values(matchedPerAsset);
+  const matchedWeeks = matchedCounts.length ? Math.min(...matchedCounts) : 0;
+
+  CORR_WEIGHTS = { mode: 'correlation', weights: normalized,
+    sellWeeks: matchedWeeks,                  // evidence actually used
+    sellWeeksFound: sellWeeks.length,         // sell weeks in the FII record
+    matchedPerAsset,
     windowWeeks: fiiWeeks.length, computed: Date.now() };
-  console.log('[corr] weights →', JSON.stringify(normalized));
+  console.log(`[corr] ${matchedWeeks}/${sellWeeks.length} sell weeks matched →`, JSON.stringify(normalized));
   derive(); broadcast();
 }
 
@@ -794,6 +819,17 @@ async function pollSE() {
 let SE_BF = { running: false, done: 0, added: 0 };
 async function backfillSE() {
   if (SE_BF.running) return;
+  /* Skip the sweep entirely when history already reaches the last trading day.
+     On a serverless host every cold start was walking ~3,300 dates to build a todo
+     list that is almost always empty. Only scan when there is a real gap. */
+  const newest = FIIHIST.length ? FIIHIST[FIIHIST.length - 1].d : null;
+  if (newest) {
+    const ageDays = (Date.now() - new Date(newest + 'T12:00:00Z')) / 864e5;
+    if (ageDays < 4) {        // covers a long weekend / market holiday
+      setStatus('stockedge-backfill', true, `up to date (${FIIHIST.length} sessions, latest ${newest})`);
+      return;
+    }
+  }
   SE_BF.running = true;
   const have = new Set(FIIHIST.map(r => r.d));
   const todo = [];
@@ -1109,7 +1145,9 @@ function derive() {
     routingMode: ROUTING_MODE,
     corrActive: CORR_WEIGHTS?.mode === 'correlation',
     corrStats: (CORR_WEIGHTS?.mode === 'correlation') ? {
-      sellWeeks: CORR_WEIGHTS.sellWeeks,
+      sellWeeks: CORR_WEIGHTS.sellWeeks,             // weeks that actually contributed
+      sellWeeksFound: CORR_WEIGHTS.sellWeeksFound,   // sell weeks present in the FII record
+      matchedPerAsset: CORR_WEIGHTS.matchedPerAsset,
       windowWeeks: CORR_WEIGHTS.windowWeeks,
       weights: CORR_WEIGHTS.weights,
       computed: CORR_WEIGHTS.computed,

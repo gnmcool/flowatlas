@@ -1319,7 +1319,17 @@ function rRoutingBadge(){
     badge.style.background='rgba(0,229,155,.15)';badge.style.color='#00E59B';badge.style.border='1px solid rgba(0,229,155,.3)';
     badge.textContent='⬡ CORRELATION MODE  →  click to roll back';
     const cs=meta.corrStats;
-    if(cs?.sellWeeks) stats.textContent=`30-day rolling avg over ${cs.sellWeeks} FII-sell weeks (${cs.windowWeeks}wk window)`;
+    /* Quote the weeks that actually contributed, not the number found. Asset price
+       history is shorter than the FII record, so older sell weeks have no return to
+       match against and are dropped — reporting the pre-filter count overstated the
+       evidence by ~4.6x. Show both when they differ so the gap is visible. */
+    if(cs?.sellWeeks){
+      const found=cs.sellWeeksFound;
+      const label=(found&&found>cs.sellWeeks)
+        ? `${cs.sellWeeks} of ${found} FII-sell weeks matched to price history`
+        : `${cs.sellWeeks} FII-sell weeks`;
+      stats.textContent=`Rolling avg over ${label} (${cs.windowWeeks}wk window)`;
+    }
   } else if(mode==='momentum'||(mode==='correlation'&&!active)){
     badge.style.background='rgba(255,193,7,.10)';badge.style.color='#FFC107';badge.style.border='1px solid rgba(255,193,7,.3)';
     const why=meta.corrStats?.reason?` — ${meta.corrStats.reason}`:'';

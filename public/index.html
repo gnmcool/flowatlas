@@ -1242,16 +1242,27 @@ function rGauge(){
   $('#fgval').textContent=v;$('#fgval').style.color=col;
   $('#fgname').textContent=name;$('#fgname').style.color=col;
   const isFut=fg.mode==='FUTURES';
+  /* VIX is now the anchor at all times, nudged by overnight futures rather than
+     replaced by them, so the label reflects that instead of claiming "ES FUTURES". */
   const lbl={
-    vix: isFut?`ES FUTURES ${fmt(fg.inputs.esFut,2)}%`:`VIX ${fmt(fg.inputs.vix,1)}`,
-    yld: isFut?`ES PROXY (US closed)`:`US10Y ${fmt(fg.inputs.us10y,2)}%`,
+    vix: isFut?`VIX ${fmt(fg.inputs.vix,1)} ± o/n fut`:`VIX ${fmt(fg.inputs.vix,1)}`,
+    yld: `US10Y ${fmt(fg.inputs.us10y,2)}%${isFut?' (last sess)':''}`,
     dxy:`DXY ${fmt(fg.inputs.dxy,1)}`,breadth:'GLOBAL BREADTH',
-    credit:fg.inputs.hyOAS?`HY OAS ${fmt(fg.inputs.hyOAS,2)}%`:'HY OAS (FRED)'
+    credit:fg.creditLive?`HY OAS ${fmt(fg.inputs.hyOAS,2)}%`:'HY OAS — NOT LOADED'
   };
-  $('#fgfactors').innerHTML=Object.entries(fg.factors).map(([k,val])=>
-    `<div class="sf"><span>${lbl[k]}</span><div class="bar"><i style="width:${val}%;background:${val>55?'var(--in)':val>40?'var(--gold)':'var(--out)'}"></i></div><span class="v">${Math.round(val)}</span></div>`).join('');
-  // Mode badge: LIVE during US hours, FUTURES when US cash market closed
-  const modeEl=$('#fg-mode');if(modeEl){modeEl.textContent=isFut?'⬡ FUTURES PROXY':'⬡ LIVE';modeEl.style.color=isFut?'var(--gold)':'var(--in)';}
+  $('#fgfactors').innerHTML=Object.entries(fg.factors).map(([k,val])=>{
+    /* A placeholder factor must not look like a measurement — grey the bar and
+       dim the row so a neutral 50 standing in for missing data is visible. */
+    const placeholder=(k==='credit'&&!fg.creditLive);
+    const barCol=placeholder?'var(--dim)':(val>55?'var(--in)':val>40?'var(--gold)':'var(--out)');
+    return `<div class="sf"${placeholder?' style="opacity:.55"':''}><span>${lbl[k]}</span><div class="bar"><i style="width:${val}%;background:${barCol}"></i></div><span class="v">${placeholder?'—':Math.round(val)}</span></div>`;
+  }).join('');
+  // Mode badge: LIVE during US hours, FUTURES-ADJUSTED when US cash market closed
+  const modeEl=$('#fg-mode');
+  if(modeEl){
+    if(!fg.creditLive){modeEl.textContent='⬡ PARTIAL — CREDIT MISSING';modeEl.style.color='var(--out)';}
+    else{modeEl.textContent=isFut?'⬡ FUTURES-ADJUSTED':'⬡ LIVE';modeEl.style.color=isFut?'var(--gold)':'var(--in)';}
+  }
   const r=$('#regime'),on=SNAP.derived.regime==='RISK-ON';
   r.textContent=SNAP.derived.regime;r.className='regime '+(on?'on':'off');
 }

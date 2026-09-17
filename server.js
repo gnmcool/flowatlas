@@ -1037,26 +1037,37 @@ function derive() {
   // US cash session: 09:30–16:00 ET = 19:00–00:30 IST (next day)
   const nowUtcH = new Date().getUTCHours();
   const usCashOpen = nowUtcH >= 13 && nowUtcH < 21; // 09:30–16:00 ET in UTC
-  // VIX: use actual VIX during US hours; use -ES futures change as fear proxy otherwise
-  // High positive ES = greed, negative ES = fear (inverse of VIX behaviour)
-  let vixScore;
-  if (vix && usCashOpen) {
-    vixScore = clamp((45 - vix.price) / 35 * 100, 0, 100);
-  } else if (esFut?.changePct != null) {
-    // ES up 1% → score 70 (greed), ES down 1% → score 30 (fear)
-    vixScore = clamp(50 + esFut.changePct * 10, 0, 100);
-  } else if (vix) {
-    vixScore = clamp((45 - vix.price) / 35 * 100, 0, 100); // stale VIX still better than 50
-  } else { vixScore = 50; }
+  /* ── Volatility factor ─────────────────────────────────────────────────────────
+   * Previously this SWITCHED between VIX and ES futures depending on the clock,
+   * which produced a large step change twice a day for no market reason: at
+   * VIX 16 the live formula reads ~83, while the futures formula at ES +0.8%
+   * read 58 — a 25-point jump in the factor, ~5 points on the headline, caused
+   * purely by the US session ending.
+   *
+   * VIX is the actual volatility expectation and stays meaningful after the close
+   * (it is a forward-looking 30-day measure, not an intraday tick). So anchor on
+   * VIX always, and let overnight futures NUDGE it rather than replace it. The
+   * adjustment is capped so a violent futures session can't dominate the gauge. */
+  let vixScore = vix ? clamp((45 - vix.price) / 35 * 100, 0, 100) : 50;
+  let vixBasis = vix ? 'VIX' : 'none';
+  if (!usCashOpen && esFut?.changePct != null && vix) {
+    vixScore = clamp(vixScore + clamp(esFut.changePct * 8, -20, 20), 0, 100);
+    vixBasis = 'VIX + overnight futures';
+  } else if (!vix && esFut?.changePct != null) {
+    vixScore = clamp(50 + esFut.changePct * 10, 0, 100);   // last resort, no VIX at all
+    vixBasis = 'futures only (VIX unavailable)';
+  }
 
-  // Yield: use actual ^TNX changePct during US hours; use ES futures as proxy otherwise
-  let yldScore;
-  if (tnx && usCashOpen) {
-    yldScore = clamp(50 - tnx.changePct * 8, 0, 100);
-  } else if (esFut?.changePct != null) {
-    // Risk-on (ES up) typically coincides with yields rising — modest proxy
-    yldScore = clamp(50 + esFut.changePct * 3, 0, 100);
-  } else { yldScore = tnx ? clamp(50 - tnx.changePct * 8, 0, 100) : 50; }
+  /* ── Yield factor ──────────────────────────────────────────────────────────────
+   * This used ES futures overnight, which meant vix and yld were BOTH derived from
+   * esFut — two of five factors perfectly correlated, handing S&P futures 40% of
+   * the index while presenting as independent signals.
+   *
+   * ^TNX carries the last completed session's yield move whether or not the cash
+   * market is open, so use it unconditionally. Outside US hours it simply reports
+   * the most recent real move, which is honest, rather than inferring yields from
+   * equity futures. */
+  const yldScore = tnx ? clamp(50 - tnx.changePct * 8, 0, 100) : 50;
 
   const idxChgs = INDICES.map(i => q(i.s)?.changePct).filter(x => x != null);
   const breadth = idxChgs.length ? idxChgs.filter(x => x > 0).length / idxChgs.length * 100 : 50;
@@ -1069,7 +1080,14 @@ function derive() {
     credit: hy && hy.length ? clamp((6 - hy[0].v) / 4 * 100, 0, 100) : 50, // HY OAS 2%→100, 6%→0
   };
   const fgMode = (!usCashOpen && esFut) ? 'FUTURES' : 'LIVE';
+  /* creditLive is false when FRED has not landed yet — the 50 in that case is a
+     neutral placeholder, not a measurement, and the UI should say so rather than
+     presenting a fabricated fifth of the score as real. */
+  const creditLive = !!(hy && hy.length);
   d.fearGreed = { score: Math.round((f.vix + f.yld + f.dxy + f.breadth + f.credit) / 5), factors: f, mode: fgMode,
+    basis: { vix: vixBasis, yld: tnx ? 'US10Y last session' : 'unavailable',
+             credit: creditLive ? 'HY OAS (FRED)' : 'PLACEHOLDER — FRED not loaded' },
+    creditLive,
     inputs: { vix: vix?.price, esFut: esFut?.changePct, us10y: tnx ? tnx.price : null, dxy: dxy?.price, hyOAS: hy?.[0]?.v ?? null, usCashOpen } };
 
   /* Country flow proxies: index move x cap weight (NOT real flows) */
@@ -1283,6 +1301,12 @@ function warmUp(maxMs = 6000) {
       pollNSEQuotes().catch(() => {}),
       pollNSEStocks().catch(() => {}),
       pollComs().catch(() => {}),
+      /* FRED must be in here. Without it a cold start served a fully-populated
+         dashboard whose Fear & Greed credit factor was still the hardcoded 50
+         placeholder — a fabricated fifth of a published score. Skipped once
+         loaded, since these series only change daily/weekly. */
+      (STATE.fred.data.BAMLH0A0HYM2?.length ? Promise.resolve()
+        : pollFRED().then(pollTreasury).catch(() => {})),
     ]),
     new Promise(r => setTimeout(r, maxMs)),
   ]).then(() => { derive(); LAST_POLL = Date.now(); })

@@ -1338,26 +1338,18 @@ function rRoutingBadge(){
   if(!meta){badge.textContent='';return;}
   const active=meta.corrActive;
   const mode=meta.routingMode;
+  /* The sample-size line under the badge is removed. The counts are still computed
+     and exposed on /api/snapshot under derived.sankeyMeta.corrStats — sellWeeks is
+     the matched count, sellWeeksFound the number present in the FII record — they
+     are simply no longer printed in the UI. */
+  stats.textContent='';
   if(mode==='correlation'&&active){
     badge.style.background='rgba(0,229,155,.15)';badge.style.color='#00E59B';badge.style.border='1px solid rgba(0,229,155,.3)';
     badge.textContent='⬡ CORRELATION MODE  →  click to roll back';
-    const cs=meta.corrStats;
-    /* Quote the weeks that actually contributed, not the number found. Asset price
-       history is shorter than the FII record, so older sell weeks have no return to
-       match against and are dropped — reporting the pre-filter count overstated the
-       evidence by ~4.6x. Show both when they differ so the gap is visible. */
-    if(cs?.sellWeeks){
-      const found=cs.sellWeeksFound;
-      const label=(found&&found>cs.sellWeeks)
-        ? `${cs.sellWeeks} of ${found} FII-sell weeks matched to price history`
-        : `${cs.sellWeeks} FII-sell weeks`;
-      stats.textContent=`Rolling avg over ${label} (${cs.windowWeeks}wk window)`;
-    }
   } else if(mode==='momentum'||(mode==='correlation'&&!active)){
     badge.style.background='rgba(255,193,7,.10)';badge.style.color='#FFC107';badge.style.border='1px solid rgba(255,193,7,.3)';
     const why=meta.corrStats?.reason?` — ${meta.corrStats.reason}`:'';
     badge.textContent=`⬡ MOMENTUM MODE${active?'':why}  →  click to use correlation`;
-    stats.textContent='Destinations weighted by same-day price momentum (legacy)';
   }
 }
 /* Vertical flow list for narrow screens — same links as the Sankey, grouped by

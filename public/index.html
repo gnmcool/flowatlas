@@ -1526,7 +1526,8 @@ function flagImg(cc){
 }
 
 /* ── World Markets chart helpers ─────────────────────────────────────── */
-let W_RANGE='3y';           // active timeframe
+let W_RANGE='1d';           // active timeframe — intraday by default, and it needs
+                            // no fetch since it reads q.spark from the snapshot
 let WCARDS_BUILT=false;     // DOM built flag — prevents rebuild on every SSE tick
 const HIST_LOCAL={};        // cache keyed sym_range
 

@@ -1566,7 +1566,23 @@ function drawHistChart(canvas,closes,up){
   ctx.fillStyle=col;ctx.fill();
 }
 
+/* 1D comes free: the snapshot already carries a 5-minute intraday series per index
+   (q.spark), so there is nothing to fetch. /api/hist cannot serve it anyway — the
+   server picks weekly or monthly bars by range, which collapses a single day to one
+   point. Reading the snapshot also means 1D updates live on every SSE push, unlike
+   the longer ranges which are cached. */
+function sparkFor(sym){
+  const x=(SNAP?.indices||[]).find(i=>i.s===sym);
+  const sp=x?.q?.spark;
+  return (Array.isArray(sp)&&sp.length>=5)?sp:null;
+}
+
 async function loadHistChart(sym,canvasId,up,range){
+  if(range==='1d'){
+    const sp=sparkFor(sym);
+    if(sp)drawHistChart($(canvasId),sp,up);
+    return;                       // never cached — always read the latest snapshot
+  }
   const key=sym+'_'+range;
   if(HIST_LOCAL[key]){drawHistChart($(canvasId),HIST_LOCAL[key],up);return;}
   try{
@@ -1583,10 +1599,12 @@ async function loadHistChart(sym,canvasId,up,range){
 function setWRange(r){
   W_RANGE=r;
   [...$$('.wrange-pill')].forEach(b=>b.classList.toggle('active',b.dataset.r===r));
-  /* reload all charts for new range */
   SNAP.indices.forEach((x,i)=>{
     const q=x.q;if(!q)return;
-    setTimeout(()=>loadHistChart(x.s,'#wspk'+i,q.changePct>=0,r),i*150);
+    /* 1D reads the in-memory snapshot, so draw immediately — the stagger exists only
+       to avoid a burst of /api/hist requests, which 1D does not make. */
+    if(r==='1d')loadHistChart(x.s,'#wspk'+i,q.changePct>=0,r);
+    else setTimeout(()=>loadHistChart(x.s,'#wspk'+i,q.changePct>=0,r),i*150);
   });
 }
 
@@ -1602,7 +1620,7 @@ function rWorldCards(){
       /* timeframe pills */
       `<div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:12px">
         <span style="font-size:10px;color:var(--dim);letter-spacing:.06em;margin-right:4px">TIMEFRAME</span>
-        ${['1y','3y','5y'].map(r=>`<button class="pill wrange-pill${r===W_RANGE?' active':''}" data-r="${r}" onclick="setWRange('${r}')">${r.toUpperCase()}</button>`).join('')}
+        ${['1d','1y','3y','5y'].map(r=>`<button class="pill wrange-pill${r===W_RANGE?' active':''}" data-r="${r}" onclick="setWRange('${r}')">${r.toUpperCase()}</button>`).join('')}
       </div>`+
       /* 3-column grid */
       `<div style="display:grid;grid-template-columns:repeat(${cols.length},1fr);gap:14px;align-items:start">`+
@@ -1649,6 +1667,13 @@ function rWorldCards(){
       if(el){flash(el,'w'+i,q.price);el.textContent=fmt(q.price,q.price>1000?0:2);}
       const ce=$('#wchg'+i);
       if(ce){ce.textContent=sgn(q.changePct)+'%';ce.style.color=q.changePct>=0?'var(--in)':'var(--out)';}
+      /* Redraw the intraday chart on every push — the spark series extends as the
+         session runs. The longer ranges are cached and need no redraw. */
+      if(W_RANGE==='1d'){
+        const sp=q.spark;
+        const c=$('#wspk'+i);
+        if(c&&Array.isArray(sp)&&sp.length>=5)drawHistChart(c,sp,q.changePct>=0);
+      }
     });
   }
   tickWorldClocks();
@@ -2209,9 +2234,15 @@ $$('.tab').forEach(t=>t.addEventListener('click',()=>{
       /* Canvases were hidden (display:none) when first drawn — redraw now they're visible */
       SNAP.indices.forEach((x,i)=>{
         const q=x.q;if(!q)return;
+        const c=$('#wspk'+i);if(!c)return;
+        /* 1D is not in HIST_LOCAL — it reads the live snapshot instead */
+        if(W_RANGE==='1d'){
+          const sp=q.spark;
+          if(Array.isArray(sp)&&sp.length>=5)drawHistChart(c,sp,q.changePct>=0);
+          return;
+        }
         const key=x.s+'_'+W_RANGE;
-        const c=$('#wspk'+i);
-        if(c&&HIST_LOCAL[key])drawHistChart(c,HIST_LOCAL[key],q.changePct>=0);
+        if(HIST_LOCAL[key])drawHistChart(c,HIST_LOCAL[key],q.changePct>=0);
       });
     }
     if(SNAP)renderAll();

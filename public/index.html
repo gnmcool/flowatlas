@@ -469,7 +469,7 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
       </div>
     </div>
     <div class="panel">
-      <div class="eyebrow"><span>GLOBAL FEAR &amp; GREED</span><span id="fg-mode" style="font-size:9px;letter-spacing:.1em;margin-left:8px"></span></div>
+      <div class="eyebrow"><span>GLOBAL FEAR &amp; GREED</span></div>
       <div class="gaugewrap">
         <svg id="gauge" width="230" height="132" viewBox="0 0 230 132"></svg>
         <div class="gaugeval" id="fgval">—</div>
@@ -491,7 +491,6 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
   <div class="panel">
     <div class="eyebrow" style="flex-wrap:wrap;gap:8px">
       <span>MONEY FLOW ENGINE — TODAY'S ROUTING</span>
-      <span class="chip drv">★ = MEASURED (NSE FII/DII cash, T+1) · ALL OTHER SOURCES = PRICE-DERIVED PROXIES</span>
       <span id="routing-badge" class="chip" style="cursor:pointer;user-select:none" onclick="toggleRoutingMode()" title="Click to switch routing mode"></span>
       <span id="corr-stats" style="font-size:9px;color:var(--mut);opacity:.7"></span>
     </div>
@@ -504,11 +503,11 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
   </div>
   <div class="grid g-2" style="margin-top:12px">
     <div class="panel">
-      <div class="eyebrow"><span>ASSET CLASS ROTATION — RELATIVE PRESSURE</span><span class="chip drv">DERIVED</span></div>
+      <div class="eyebrow"><span>ASSET CLASS ROTATION — RELATIVE PRESSURE</span></div>
       <div class="rot" id="rotation"></div>
     </div>
     <div class="panel">
-      <div class="eyebrow"><span>MARKET SIGNAL ENGINE</span><span class="chip drv">RULE-BASED ON LIVE DATA</span></div>
+      <div class="eyebrow"><span>MARKET SIGNAL ENGINE</span></div>
       <div class="insights" id="insights"></div>
     </div>
   </div>
@@ -551,7 +550,7 @@ body.light .disclaimer{background:rgba(183,121,31,.06);border-color:rgba(183,121
   </div>
 
   <div class="panel" style="margin-top:12px">
-    <div class="eyebrow"><span>MARKET SIGNAL ENGINE — INDIA</span><span class="chip drv">RULE-BASED ON LIVE + MEASURED DATA</span></div>
+    <div class="eyebrow"><span>MARKET SIGNAL ENGINE — INDIA</span></div>
     <div class="insights" id="ininsights"></div>
   </div>
 
@@ -1278,14 +1277,6 @@ function rGauge(){
     const barCol=degraded?'var(--dim)':(val>55?'var(--in)':val>40?'var(--gold)':'var(--out)');
     return `<div class="sf"${degraded?' style="opacity:.55"':''} title="${(b[k]||'').replace(/"/g,'')}"><span>${lbl[k]||k}</span><div class="bar"><i style="width:${val}%;background:${barCol}"></i></div><span class="v">${degraded?'—':Math.round(val)}</span></div>`;
   }).join('');
-  const modeEl=$('#fg-mode');
-  if(modeEl){
-    const m=fg.mode;
-    modeEl.textContent=m==='RELATIVE'?'⬡ vs TRAILING AVG'
-      :m==='PARTIAL'?'⬡ PARTIAL DATA':'⬡ DEGRADED';
-    modeEl.style.color=m==='RELATIVE'?'var(--in)':m==='PARTIAL'?'var(--gold)':'var(--out)';
-    modeEl.title=Object.entries(b).map(([k,v])=>`${k}: ${v}`).join('\n');
-  }
 }
 /* Market cap weights (USD trillions) for treemap sizing */
 const CC_CAP={US:48,CN:10,JP:6,DE:6,IN:4.5,HK:5,FR:3,UK:3.2,TW:2,KR:2,SG:1,TH:0.8,ID:0.8,BR:1.2,AU:1.6};
